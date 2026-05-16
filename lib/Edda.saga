@@ -1,0 +1,127 @@
+module Edda
+
+# Core router combinators for the Edda web framework.
+#
+# A route handler is any function `Request -> Response needs {Skip, ..e}`.
+# The Skip effect lets a route signal "I don't match — try the next one."
+# Combinators (route, choose, group, mount) compose these into an app, which
+# is ultimately a `Request -> Response` ready to hand to SagaHttp.serve.
+
+import SagaHttp.Http (Request, Response, text)
+import Std.String
+
+# ---------------------------------------------------------------------------
+# HTTP method
+# ---------------------------------------------------------------------------
+
+#@ Standard HTTP methods, with an escape hatch for non-standard verbs.
+#@ saga_http does not restrict methods on the wire, so `Custom "BREW"` is
+#@ available if you really want it.
+pub type Method =
+  | GET
+  | POST
+  | PUT
+  | DELETE
+  | PATCH
+  | OPTIONS
+  | HEAD
+  | Custom String
+
+pub fun method_str : Method -> String
+method_str GET = "GET"
+method_str POST = "POST"
+method_str PUT = "PUT"
+method_str DELETE = "DELETE"
+method_str PATCH = "PATCH"
+method_str OPTIONS = "OPTIONS"
+method_str HEAD = "HEAD"
+method_str (Custom s) = s
+
+# ---------------------------------------------------------------------------
+# Skip effect — "this handler doesn't match, try the next one"
+# ---------------------------------------------------------------------------
+
+pub effect Skip {
+  fun skip : Unit -> a
+}
+
+# ---------------------------------------------------------------------------
+# Default fallback when no route matches.
+# ---------------------------------------------------------------------------
+
+pub val not_found = text 404 "not found"
+
+# ---------------------------------------------------------------------------
+# route — method + exact path match, then run the handler.
+# ---------------------------------------------------------------------------
+
+#@ Build a route. If the request method and path match, the handler runs;
+#@ otherwise the route skips.
+#@
+#@ Path matching is exact for v1. `:param` extraction lands in a follow-up.
+pub fun route : Method -> String -> (Request -> Response needs {..e}) -> Request -> Response
+  needs {Skip, ..e}
+route m pattern h req =
+  if req.method == method_str m && req.path == pattern then h req
+  else skip! ()
+
+# ---------------------------------------------------------------------------
+# choose — try each route in order; first one that doesn't skip wins.
+# ---------------------------------------------------------------------------
+
+pub fun choose : List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+  needs {..e}
+choose routes req = case routes {
+  [] -> not_found
+  r :: rest -> r req with {
+    skip () = choose rest req
+  }
+}
+
+# ---------------------------------------------------------------------------
+# group — inline sub-routes sharing the parent's effect row.
+# ---------------------------------------------------------------------------
+
+#@ Match a path prefix and run the inner routes against the remainder.
+#@ Sub-routes share the parent's effect row (..e propagates through).
+pub fun group : String -> List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+  needs {Skip, ..e}
+group prefix routes req = case strip_path_prefix prefix req.path {
+  Just rest -> choose routes ({ req | path: rest })
+  Nothing -> skip! ()
+}
+
+# ---------------------------------------------------------------------------
+# mount — attach a fully-discharged sub-app at a prefix.
+# ---------------------------------------------------------------------------
+
+#@ Mount a sub-app whose effects are already handled. Useful when a sub-app
+#@ runs against a different handler stack (admin DB pool, mock auth in tests),
+#@ or is its own module.
+pub fun mount : String -> (Request -> Response) -> Request -> Response
+  needs {Skip}
+mount prefix app req = case strip_path_prefix prefix req.path {
+  Just rest -> app ({ req | path: rest })
+  Nothing -> skip! ()
+}
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Strip a path prefix segment-wise. Returns the remainder with a leading "/"
+# so the inner matcher still works with normal-looking paths.
+#
+# - "/users", "/users"      -> Just "/"
+# - "/users", "/users/42"   -> Just "/42"
+# - "/users", "/usersfoo"   -> Nothing   (partial segment match rejected)
+# - "/users", "/posts"      -> Nothing
+fun strip_path_prefix : String -> String -> Maybe String
+strip_path_prefix prefix path = case String.strip_prefix prefix path {
+  Nothing -> Nothing
+  Just rest -> {
+    if String.is_empty rest then Just "/"
+    else if String.starts_with "/" rest then Just rest
+    else Nothing
+  }
+}

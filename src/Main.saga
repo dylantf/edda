@@ -1,0 +1,40 @@
+module Main
+
+import Std.Actor (beam_actor)
+import Edda (GET, route, choose, group)
+import SagaHttp.Http (
+  serve,
+  await_shutdown,
+  default_config,
+  text,
+  print_events,
+  Request,
+  Response
+)
+
+fun home : Request -> Response
+home _ = text 200 "hello, edda!"
+
+fun hello : Request -> Response
+hello _ = text 200 "hello, world!"
+
+fun list_users : Request -> Response
+list_users _ = text 200 "users: alice, bob"
+
+fun list_posts : Request -> Response
+list_posts _ = text 200 "no posts yet"
+
+fun app : Request -> Response
+app req = choose [
+  route GET "/" home,
+  route GET "/hello" hello,
+  group "/users" [route GET "/" list_users],
+  group "/posts" [route GET "/" list_posts],
+] req
+
+main () = {
+  case serve default_config app {
+    Err e -> dbg ("startup failed", e)
+    Ok h -> await_shutdown h
+  }
+} with {beam_actor, print_events}

@@ -1,0 +1,13 @@
+[project]
+name = "edda"
+
+[bin]
+main = "src/Main.saga"
+
+[library]
+module = "Edda"
+expose = ["Edda"]
+
+[deps]
+saga_http = { git = "https://github.com/dylantf/saga_http" }
+saga_json = { git = "https://github.com/dylantf/saga_json" }
