@@ -1,8 +1,10 @@
 module Main
 
 import Std.Actor (beam_actor)
-import Edda (Request, Method, GET, route, choose, group, param, to_handler)
-import SagaHttp.Http (
+import Std.IO (console, println)
+import Std.Time
+import Edda (Request, GET, route, choose, group, param, method_str, from_http)
+import SagaHttp.Http as Http (
   serve,
   await_shutdown,
   default_config,
@@ -11,11 +13,16 @@ import SagaHttp.Http (
   Response
 )
 
+effect ReqCtx {
+  fun request_id : Unit -> String
+}
+
+# A cheap-and-cheerful id source. Real apps would want UUIDv7 / atomic counter.
+fun gen_request_id : Unit -> String
+gen_request_id () = show (Time.monotonic_ms ())
+
 fun home : Request -> Response
 home _ = text 200 "hello, edda!"
-
-fun list_users : Request -> Response
-list_users _ = text 200 "users: alice, bob"
 
 fun show_user : Request -> Response
 show_user req = case param "id" req {
@@ -23,38 +30,60 @@ show_user req = case param "id" req {
   Nothing -> text 400 "missing id"
 }
 
-fun show_user_post : Request -> Response
-show_user_post req = case (param "id" req, param "post_id" req) {
-  (Just uid, Just pid) -> text 200 $"user {uid}, post {pid}"
-  _ -> text 400 "missing params"
+# Opt-in to ambient context: route declares it needs ReqCtx.
+fun whoami : Request -> Response needs {ReqCtx}
+whoami _ = {
+  let rid = request_id! ()
+  text 200 $"your request id: {rid}"
 }
 
-fun v1_health : Request -> Response
-v1_health _ = text 200 "v1 ok"
+fun app : Request -> Response needs {ReqCtx}
+app req =
+  choose [
+    route GET "/" home,
+    route GET "/users/:id" show_user,
+    route GET "/whoami" whoami,
+  ] req
 
-fun list_user_posts : Request -> Response
-list_user_posts req = case param "id" req {
-  Just uid -> text 200 $"posts for user {uid}"
-  Nothing -> text 400 "missing id"
+# Logger wrap. Prints request line on entry, status on exit. Picks up the
+# inner's effect row via {..e} so it composes with any app shape.
+fun with_logging : (Request -> Response needs {..e}) -> Request -> Response
+  needs {Stdio, ..e}
+with_logging inner req = {
+  println $"--> {method_str req.method} {req.original_path}"
+  let resp = inner req
+  println $"<-- {resp.status}"
+  resp
 }
 
-fun app : Request -> Response
-app req = choose [
-  route GET "/" home,
-  route GET "/users" list_users,
-  route GET "/users/:id" show_user,
-  route GET "/users/:id/posts/:post_id" show_user_post,
-  group "/users/:id" [
-    route GET "/posts" list_user_posts,
-  ],
-  group "/api/v1" [
-    route GET "/health" v1_health,
-  ],
-] req
+# Timing wrap. Uses Std.Time.monotonic_ms (pure) bracketing the inner call.
+fun with_timing : (Request -> Response needs {..e}) -> Request -> Response
+  needs {Stdio, ..e}
+with_timing inner req = {
+  let start = Time.monotonic_ms ()
+  let resp = inner req
+  let elapsed = Time.monotonic_ms () - start
+  println $"    [{elapsed}ms]"
+  resp
+}
+
+fun handle : Http.Request -> Response
+handle hr = {
+  let req = from_http hr
+  let rid = gen_request_id ()
+  with_logging (with_timing app) req with {
+    request_id () = resume rid
+  }
+} with console
 
 main () = {
-  case serve default_config (to_handler app) {
+  let cfg = { default_config | port: 8080 }
+
+  case serve cfg handle {
     Err e -> dbg ("startup failed", e)
-    Ok h -> await_shutdown h
+    Ok h -> {
+      println $"🚀 Server running at http://localhost:{cfg.port}"
+      await_shutdown h
+    }
   }
-} with {beam_actor, print_events}
+} with {beam_actor, print_events, console}
