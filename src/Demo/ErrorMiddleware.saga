@@ -1,0 +1,89 @@
+module Demo.ErrorMiddleware
+
+import Std.IO (console, println)
+import Std.Process (catch_panic)
+import Std.Time
+import Edda (Request, GET, route, choose, param)
+import SagaHttp.Http (Response, text)
+
+# Domain error variants. Each maps to a specific HTTP status at the boundary.
+type AppError =
+  | NotFound String
+  | BadRequest String
+  | Conflict String
+  | Internal String
+
+effect Fail {
+  fun fail : AppError -> a
+}
+
+type DbError =
+  | DbTimeout
+  | DbMissing
+
+fun fake_lookup : String -> Result String DbError
+fake_lookup "42" = Ok "the answer to life, the universe, and everything"
+fake_lookup "13" = Err DbTimeout
+fake_lookup _ = Err DbMissing
+
+# Routes
+
+# Happy path + expected failures from a Result lifted into Fail.
+fun show_item : Request -> Response needs {Fail}
+show_item req = case param "id" req {
+  Nothing -> fail! (BadRequest "missing id")
+  Just id -> case fake_lookup id {
+    Ok value -> text 200 value
+    Err DbMissing -> fail! (NotFound $"item {id}")
+    Err DbTimeout -> fail! (Internal "database timeout")
+  }
+}
+
+fun always_conflict : Request -> Response needs {Fail}
+always_conflict _ =
+  fail! (Conflict "this resource is intentionally in conflict")
+
+fun oops : Request -> Response
+oops _ = panic "intentional bug for the demo"
+
+fun divide_by_zero : Request -> Response
+divide_by_zero _ = {
+  let result = 10 / 0
+  text 200 $"result: {result}"
+}
+
+# Turns panics into 500 responses
+fun with_panic_recovery : (Request -> Response needs {..e}) -> Request -> Response
+  needs {..e}
+with_panic_recovery inner req = case catch_panic (fun () -> inner req) {
+  Ok resp -> resp
+  Err msg -> text 500 $"internal error: {msg}"
+}
+
+pub fun app : Request -> Response
+app req = {
+  let rid = show (Time.monotonic_ms ())
+  with_panic_recovery (choose [
+    route GET "/items/:id" show_item,
+    route GET "/conflict" always_conflict,
+    route GET "/oops" oops,
+    route GET "/divide" divide_by_zero,
+  ]) req with {
+    fail (NotFound msg) = {
+      println $"[err rid={rid}] 404 NotFound: {msg}"
+      text 404 msg
+    }
+    fail (BadRequest msg) = {
+      println $"[err rid={rid}] 400 BadRequest: {msg}"
+      text 400 msg
+    }
+    fail (Conflict msg) = {
+      println $"[err rid={rid}] 409 Conflict: {msg}"
+      text 409 msg
+    }
+    fail (Internal msg) = {
+      println $"[err rid={rid}] 500 Internal: {msg}"
+      text 500 msg
+    }
+  }
+} with console

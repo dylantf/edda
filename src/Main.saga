@@ -3,6 +3,7 @@ module Main
 import Std.Actor (beam_actor)
 import Std.IO (console, println)
 import Demo.AuthMiddleware as Auth
+import Demo.ErrorMiddleware as Errors
 import Demo.TimingMiddleware as Timing
 import Edda (Request, mount, choose, to_handler)
 import SagaHttp.Http (
@@ -35,13 +36,19 @@ handler quiet_events for Server {
 
 fun home : Request -> Response
 home _ =
-  text 200 "edda demos: try /timing /timing/fast /timing/work /secret/me /secret/account"
+  text 200 """
+    edda demos:
+      /timing/{fast,work}
+      /secret/{me,account}
+      /errors/{items/42,items/13,items/x,conflict,oops,divide}
+    """
 
 fun app : Request -> Response
 app req =
   choose [
     mount "/timing" Timing.app,
     mount "/secret" Auth.app,
+    mount "/errors" Errors.app,
     fun r -> home r,
   ] req
 
