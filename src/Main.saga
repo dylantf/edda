@@ -10,11 +10,20 @@ import SagaHttp.Http as Http (
   default_config,
   text,
   print_events,
-  Response
+  Response,
+  find_header
 )
 
 effect ReqCtx {
   fun request_id : Unit -> String
+}
+
+# Auth via effect handler: route opts in by declaring `needs {Auth}` and
+# calling `current_user! ()`. The handler installed at the boundary checks
+# the request and either resumes with the user's name or returns a 401
+# directly (no resume → the route's body never runs).
+effect Auth {
+  fun current_user : Unit -> String
 }
 
 # A cheap-and-cheerful id source. Real apps would want UUIDv7 / atomic counter.
@@ -30,19 +39,33 @@ show_user req = case param "id" req {
   Nothing -> text 400 "missing id"
 }
 
-# Opt-in to ambient context: route declares it needs ReqCtx.
+# Opt-in to ambient context.
 fun whoami : Request -> Response needs {ReqCtx}
 whoami _ = {
   let rid = request_id! ()
   text 200 $"your request id: {rid}"
 }
 
-fun app : Request -> Response needs {ReqCtx}
+# Opt-in to auth. If unauthorized, the handler aborts with 401 and `text 200`
+# never runs.
+fun account : Request -> Response needs {Auth}
+account _ = {
+  let user = current_user! ()
+  text 200 $"account page for {user}"
+}
+
+# A pure handler we'll protect with the function-wrap below.
+fun secret : Request -> Response
+secret _ = text 200 "the secret is 42"
+
+fun app : Request -> Response needs {ReqCtx, Auth}
 app req =
   choose [
     route GET "/" home,
     route GET "/users/:id" show_user,
     route GET "/whoami" whoami,
+    route GET "/account" account,
+    route GET "/secret" (require_api_key "alpha" secret),
   ] req
 
 # Logger wrap. Prints request line on entry, status on exit. Picks up the
@@ -67,12 +90,27 @@ with_timing inner req = {
   resp
 }
 
+# Function-middleware: a wrap that uses no effect of its own. Reads a header,
+# either calls inner or short-circuits with 401. Same shape as the wraps above
+# but for "opt-in" cross-cutting protection on a single route or subtree.
+fun require_api_key : String -> (Request -> Response needs {..e}) -> Request -> Response
+  needs {..e}
+require_api_key key inner req = case find_header "x-api-key" req.headers {
+  Just k -> if k == key then inner req else text 401 "wrong api key"
+  Nothing -> text 401 "missing api key"
+}
+
 fun handle : Http.Request -> Response
 handle hr = {
   let req = from_http hr
   let rid = gen_request_id ()
   with_logging (with_timing app) req with {
     request_id () = resume rid
+    current_user () = case find_header "x-user" req.headers {
+      Just "alice" -> resume "Alice"
+      Just "bob" -> resume "Bob"
+      _ -> text 401 "unauthorized"
+    }
   }
 } with console
 
