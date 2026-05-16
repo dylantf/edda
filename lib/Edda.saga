@@ -5,18 +5,19 @@ module Edda
 # A route handler is any function `Request -> Response needs {Skip, ..e}`.
 # The Skip effect lets a route signal "I don't match — try the next one."
 # Combinators (route, choose, group, mount) compose these into an app, which
-# is ultimately a `Request -> Response` ready to hand to SagaHttp.serve.
+# is ultimately a `Request -> Response` ready to hand to SagaHttp.serve via
+# the `to_handler` boundary helper.
 
-import SagaHttp.Http (Request, Response, text)
+import Std.Dict
+import Std.List
 import Std.String
+import SagaHttp.Http as Http (Response, text)
 
 # ---------------------------------------------------------------------------
 # HTTP method
 # ---------------------------------------------------------------------------
 
 #@ Standard HTTP methods, with an escape hatch for non-standard verbs.
-#@ saga_http does not restrict methods on the wire, so `Custom "BREW"` is
-#@ available if you really want it.
 pub type Method =
   | GET
   | POST
@@ -26,6 +27,7 @@ pub type Method =
   | OPTIONS
   | HEAD
   | Custom String
+  deriving (Eq)
 
 pub fun method_str : Method -> String
 method_str GET = "GET"
@@ -36,6 +38,41 @@ method_str PATCH = "PATCH"
 method_str OPTIONS = "OPTIONS"
 method_str HEAD = "HEAD"
 method_str (Custom s) = s
+
+fun method_from_string : String -> Method
+method_from_string s = {
+  let u = String.to_upper s
+  if u == "GET" then GET
+  else if u == "POST" then POST
+  else if u == "PUT" then PUT
+  else if u == "DELETE" then DELETE
+  else if u == "PATCH" then PATCH
+  else if u == "OPTIONS" then OPTIONS
+  else if u == "HEAD" then HEAD
+  else Custom s
+}
+
+# ---------------------------------------------------------------------------
+# Request
+# ---------------------------------------------------------------------------
+
+#@ The framework's view of an HTTP request.
+#@
+#@ `path` reflects the current matcher's view — inside a `group`, it has the
+#@ matched prefix stripped. `original_path` is always the unmodified path
+#@ from the wire, useful for logging and correlation.
+pub record Request {
+  method: Method,
+  path: String,
+  original_path: String,
+  params: Dict String String,
+  headers: List (String, String),
+  body: Maybe BitString,
+}
+
+#@ Look up a captured path parameter by name.
+pub fun param : String -> Request -> Maybe String
+param name req = Dict.get name req.params
 
 # ---------------------------------------------------------------------------
 # Skip effect — "this handler doesn't match, try the next one"
@@ -52,18 +89,42 @@ pub effect Skip {
 pub val not_found = text 404 "not found"
 
 # ---------------------------------------------------------------------------
-# route — method + exact path match, then run the handler.
+# Path segment helpers
 # ---------------------------------------------------------------------------
 
-#@ Build a route. If the request method and path match, the handler runs;
-#@ otherwise the route skips.
-#@
-#@ Path matching is exact for v1. `:param` extraction lands in a follow-up.
+fun path_segments : String -> List String
+path_segments path = String.split "/" path |> List.filter (fun s -> s != "")
+
+fun segments_to_path : List String -> String
+segments_to_path segs = "/" <> String.join "/" segs
+
+# Match a pattern (segments) against the START of path segments.
+# `:name` segments capture into the params dict.
+# Returns Just (params merged with new captures, remaining segments) or Nothing.
+fun match_prefix : List String -> List String -> Dict String String -> Maybe (Dict String String, List String)
+match_prefix [] segs params = Just (params, segs)
+match_prefix (_ :: _) [] _ = Nothing
+match_prefix (p :: ps) (s :: ss) params = case p {
+  ":" <> name -> match_prefix ps ss (Dict.put name s params)
+  _ -> if p == s then match_prefix ps ss params else Nothing
+}
+
+# ---------------------------------------------------------------------------
+# route — method + pattern match; capture :params into req.params.
+# ---------------------------------------------------------------------------
+
+#@ Build a route. If method matches and the pattern fully consumes the path
+#@ (capturing any `:name` segments into params), the handler runs; otherwise
+#@ the route skips to let the next route try.
 pub fun route : Method -> String -> (Request -> Response needs {..e}) -> Request -> Response
   needs {Skip, ..e}
 route m pattern h req =
-  if req.method == method_str m && req.path == pattern then h req
-  else skip! ()
+  if req.method == m then {
+    case match_prefix (path_segments pattern) (path_segments req.path) req.params {
+      Just (new_params, []) -> h { req | params: new_params }
+      _ -> skip! ()
+    }
+  } else skip! ()
 
 # ---------------------------------------------------------------------------
 # choose — try each route in order; first one that doesn't skip wins.
@@ -83,45 +144,47 @@ choose routes req = case routes {
 # ---------------------------------------------------------------------------
 
 #@ Match a path prefix and run the inner routes against the remainder.
-#@ Sub-routes share the parent's effect row (..e propagates through).
+#@ Captured `:name` params accumulate and are visible to sub-routes.
 pub fun group : String -> List (Request -> Response needs {Skip, ..e}) -> Request -> Response
   needs {Skip, ..e}
-group prefix routes req = case strip_path_prefix prefix req.path {
-  Just rest -> choose routes ({ req | path: rest })
-  Nothing -> skip! ()
-}
+group prefix routes req =
+  case match_prefix (path_segments prefix) (path_segments req.path) req.params {
+    Just (new_params, remaining) ->
+      choose routes { req | params: new_params, path: segments_to_path remaining }
+    Nothing -> skip! ()
+  }
 
 # ---------------------------------------------------------------------------
 # mount — attach a fully-discharged sub-app at a prefix.
 # ---------------------------------------------------------------------------
 
-#@ Mount a sub-app whose effects are already handled. Useful when a sub-app
-#@ runs against a different handler stack (admin DB pool, mock auth in tests),
-#@ or is its own module.
+#@ Mount a sub-app whose effects are already handled. Captured `:name`
+#@ params accumulate and are visible to the sub-app.
 pub fun mount : String -> (Request -> Response) -> Request -> Response
   needs {Skip}
-mount prefix app req = case strip_path_prefix prefix req.path {
-  Just rest -> app ({ req | path: rest })
-  Nothing -> skip! ()
-}
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-# Strip a path prefix segment-wise. Returns the remainder with a leading "/"
-# so the inner matcher still works with normal-looking paths.
-#
-# - "/users", "/users"      -> Just "/"
-# - "/users", "/users/42"   -> Just "/42"
-# - "/users", "/usersfoo"   -> Nothing   (partial segment match rejected)
-# - "/users", "/posts"      -> Nothing
-fun strip_path_prefix : String -> String -> Maybe String
-strip_path_prefix prefix path = case String.strip_prefix prefix path {
-  Nothing -> Nothing
-  Just rest -> {
-    if String.is_empty rest then Just "/"
-    else if String.starts_with "/" rest then Just rest
-    else Nothing
+mount prefix app req =
+  case match_prefix (path_segments prefix) (path_segments req.path) req.params {
+    Just (new_params, remaining) ->
+      app { req | params: new_params, path: segments_to_path remaining }
+    Nothing -> skip! ()
   }
+
+# ---------------------------------------------------------------------------
+# Boundary helpers — saga_http <-> Edda
+# ---------------------------------------------------------------------------
+
+#@ Lift a SagaHttp.Http.Request into an Edda.Request.
+pub fun from_http : Http.Request -> Request
+from_http hr = Request {
+  method: method_from_string hr.method,
+  path: hr.path,
+  original_path: hr.path,
+  params: Dict.new (),
+  headers: hr.headers,
+  body: hr.body,
 }
+
+#@ Adapt an Edda app to the `Request -> Response` shape `SagaHttp.serve`
+#@ expects. Use as: `serve config (to_handler app)`.
+pub fun to_handler : (Request -> Response) -> Http.Request -> Response
+to_handler app hr = app (from_http hr)
