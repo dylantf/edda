@@ -2,126 +2,56 @@ module Main
 
 import Std.Actor (beam_actor)
 import Std.IO (console, println)
-import Std.Time
-import Edda (Request, GET, route, choose, group, param, method_str, from_http)
-import SagaHttp.Http as Http (
+import Demo.AuthMiddleware as Auth
+import Demo.TimingMiddleware as Timing
+import Edda (Request, mount, choose, to_handler)
+import SagaHttp.Http (
   serve,
   await_shutdown,
   default_config,
   text,
-  print_events,
-  Response,
-  find_header
+  Server,
+  ServerEvent,
+  ClientDisconnected,
+  IdleTimeout,
+  PipelinedRequestDropped,
+  Response
 )
 
-effect ReqCtx {
-  fun request_id : Unit -> String
+# Filtering Server-event handler: silently drop the routine events that fire
+# on every request (client closing the socket, idle keep-alives, etc.) but
+# surface anything else as a debug print.
+handler quiet_events for Server {
+  event e = {
+    case e {
+      ClientDisconnected -> ()
+      IdleTimeout -> ()
+      PipelinedRequestDropped -> ()
+      _ -> dbg e
+    }
+    resume ()
+  }
 }
-
-# Auth via effect handler: route opts in by declaring `needs {Auth}` and
-# calling `current_user! ()`. The handler installed at the boundary checks
-# the request and either resumes with the user's name or returns a 401
-# directly (no resume → the route's body never runs).
-effect Auth {
-  fun current_user : Unit -> String
-}
-
-# A cheap-and-cheerful id source. Real apps would want UUIDv7 / atomic counter.
-fun gen_request_id : Unit -> String
-gen_request_id () = show (Time.monotonic_ms ())
 
 fun home : Request -> Response
-home _ = text 200 "hello, edda!"
+home _ =
+  text 200 "edda demos: try /timing /timing/fast /timing/work /secret/me /secret/account"
 
-fun show_user : Request -> Response
-show_user req = case param "id" req {
-  Just id -> text 200 $"showing user {id}"
-  Nothing -> text 400 "missing id"
-}
-
-# Opt-in to ambient context.
-fun whoami : Request -> Response needs {ReqCtx}
-whoami _ = {
-  let rid = request_id! ()
-  text 200 $"your request id: {rid}"
-}
-
-# Opt-in to auth. If unauthorized, the handler aborts with 401 and `text 200`
-# never runs.
-fun account : Request -> Response needs {Auth}
-account _ = {
-  let user = current_user! ()
-  text 200 $"account page for {user}"
-}
-
-# A pure handler we'll protect with the function-wrap below.
-fun secret : Request -> Response
-secret _ = text 200 "the secret is 42"
-
-fun app : Request -> Response needs {ReqCtx, Auth}
+fun app : Request -> Response
 app req =
   choose [
-    route GET "/" home,
-    route GET "/users/:id" show_user,
-    route GET "/whoami" whoami,
-    route GET "/account" account,
-    route GET "/secret" (require_api_key "alpha" secret),
+    mount "/timing" Timing.app,
+    mount "/secret" Auth.app,
+    fun r -> home r,
   ] req
-
-# Logger wrap. Prints request line on entry, status on exit. Picks up the
-# inner's effect row via {..e} so it composes with any app shape.
-fun with_logging : (Request -> Response needs {..e}) -> Request -> Response
-  needs {Stdio, ..e}
-with_logging inner req = {
-  println $"--> {method_str req.method} {req.original_path}"
-  let resp = inner req
-  println $"<-- {resp.status}"
-  resp
-}
-
-# Timing wrap. Uses Std.Time.monotonic_ms (pure) bracketing the inner call.
-fun with_timing : (Request -> Response needs {..e}) -> Request -> Response
-  needs {Stdio, ..e}
-with_timing inner req = {
-  let start = Time.monotonic_ms ()
-  let resp = inner req
-  let elapsed = Time.monotonic_ms () - start
-  println $"    [{elapsed}ms]"
-  resp
-}
-
-# Function-middleware: a wrap that uses no effect of its own. Reads a header,
-# either calls inner or short-circuits with 401. Same shape as the wraps above
-# but for "opt-in" cross-cutting protection on a single route or subtree.
-fun require_api_key : String -> (Request -> Response needs {..e}) -> Request -> Response
-  needs {..e}
-require_api_key key inner req = case find_header "x-api-key" req.headers {
-  Just k -> if k == key then inner req else text 401 "wrong api key"
-  Nothing -> text 401 "missing api key"
-}
-
-fun handle : Http.Request -> Response
-handle hr = {
-  let req = from_http hr
-  let rid = gen_request_id ()
-  with_logging (with_timing app) req with {
-    request_id () = resume rid
-    current_user () = case find_header "x-user" req.headers {
-      Just "alice" -> resume "Alice"
-      Just "bob" -> resume "Bob"
-      _ -> text 401 "unauthorized"
-    }
-  }
-} with console
 
 main () = {
   let cfg = { default_config | port: 8080 }
-
-  case serve cfg handle {
+  case serve cfg (to_handler app) {
     Err e -> dbg ("startup failed", e)
     Ok h -> {
       println $"🚀 Server running at http://localhost:{cfg.port}"
       await_shutdown h
     }
   }
-} with {beam_actor, print_events, console}
+} with {beam_actor, quiet_events, console}

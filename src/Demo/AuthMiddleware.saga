@@ -1,0 +1,66 @@
+# A self-contained demo of opt-in auth via an effect handler.
+#
+# Routes declare `needs {Auth}` and call `current_user! ()` to obtain
+# the authenticated user. The boundary handler parses a Bearer token
+# from the Authorization header; on failure it aborts (doesn't resume)
+# and the route's body never runs.
+
+module Demo.AuthMiddleware
+
+import Edda (Request, GET, route, choose)
+import SagaHttp.Http (Response, text, find_header)
+
+type Authority =
+  | User (name: String)
+  | Anonymous
+
+effect Auth {
+  fun current_user : Unit -> String
+}
+
+fun me : Request -> Response needs {Auth}
+me _ = {
+  let user = current_user! ()
+  text 200 $"you are {user}"
+}
+
+fun account : Request -> Response needs {Auth}
+account _ = {
+  let user = current_user! ()
+  text 200 $"account page for {user}"
+}
+
+type ParseTokenResult =
+  | Token String
+  | ParseError
+
+fun parse_bearer : String -> ParseTokenResult
+parse_bearer s = case s {
+  "Bearer " <> token -> Token token
+  _ -> ParseError
+}
+
+fun authenticate : String -> Authority
+authenticate "alice-token" = User "Alice"
+authenticate "bob-token" = User "Bob"
+authenticate _ = Anonymous
+
+pub fun app : Request -> Response
+app req = {
+  req
+  |> choose [
+    route GET "/me" me, 
+    route GET "/account" account
+  ]
+} with {
+  current_user () = do {
+    Just auth_header <- find_header "authorization" req.headers
+    Token token <- parse_bearer auth_header
+    User u <- authenticate token
+    resume u
+  } else {
+    Nothing -> text 401 "Authorization header required!"
+    ParseError -> text 401 "Expected Bearer token!"
+    Anonymous -> text 401 "Token invalid!"
+  }
+}

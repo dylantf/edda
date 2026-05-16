@@ -1,0 +1,63 @@
+module Demo.TimingMiddleware
+
+# A self-contained demo of opt-in middleware via an effect handler with
+# the canonical "code before resume / code after resume" bracket pattern.
+#
+# Routes opt in by declaring `needs {Timing}` and calling `measure! "label"`.
+# The handler at the boundary measures from the call to `measure!` until
+# the rest of the route returns.
+#
+# Contrast with Demo.AuthMiddleware: that handler short-circuits by NOT
+# calling resume. This one calls resume in the middle and captures its
+# result — a true bracket. Same effect machinery, two very different uses.
+
+import Std.IO (console, println)
+import Std.Time
+import Edda (Request, GET, route, choose)
+import SagaHttp.Http (Response, text)
+
+effect Timing {
+  fun measure : (label: String) -> Unit
+}
+
+# Canonical bracket: pre-code, resume (running the rest of the route),
+# post-code. Captures the route's Response from resume so it propagates.
+handler timing for Timing needs {Stdio} {
+  measure label = {
+    let start = Time.monotonic_ms ()
+    let result = resume ()
+    let elapsed = Time.monotonic_ms () - start
+    println $"    [timing] {label}: {elapsed}ms"
+    result
+  }
+}
+
+# A pure recursive fib so /work has something non-trivial to measure.
+fun fib : Int -> Int
+fib 0 = 0
+fib 1 = 1
+fib n = fib (n - 1) + fib (n - 2)
+
+fun home : Request -> Response
+home _ = text 200 "timing demo: try /fast (untimed) or /work (timed)"
+
+# Doesn't opt in — no Timing in needs, no log line for this route.
+fun fast : Request -> Response
+fast _ = text 200 "fast response (no timing)"
+
+# Opts in. `measure!` brackets the rest of this function.
+fun work : Request -> Response needs {Timing}
+work _ = {
+  measure! "fib(28)"
+  text 200 $"fib(28) = {fib 28}"
+}
+
+# Discharge Timing + Stdio internally so we can be mounted as a pure
+# Request -> Response. `timing` needs Stdio for its println, so `console`
+# must be in scope around it.
+pub fun app : Request -> Response
+app req = choose [
+  route GET "/" home,
+  route GET "/fast" fast,
+  route GET "/work" work,
+] req with {timing, console}
