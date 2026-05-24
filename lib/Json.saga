@@ -1,0 +1,62 @@
+#@ JSON request/response helpers for Edda.
+#@
+#@ Built on top of saga_json. The `ToJson` / `FromJson` traits do the work;
+#@ this module is just the glue between them and Edda's `Request` / `Response`.
+module Edda.Json
+
+import Std.BitString
+import Std.List
+import Std.String
+import SagaHttp.Http as Http (Response, ResponseBody, text)
+import SagaJson as J
+import SagaJson.Encode as E (ToJson, serialize)
+import SagaJson.Decode as D (FromJson, deserialize)
+import Edda (Request)
+
+#@ Encode a value as a JSON response body with the given status.
+#@ Sets `Content-Type: application/json` automatically.
+pub fun json : Int -> a -> Response where {a: ToJson}
+json status value = Response {
+  status: status,
+  headers: [("Content-Type", "application/json")],
+  body: Buffered (serialize value),
+}
+
+#@ Why decoding a JSON body failed. Keeps body-level problems
+#@ (missing body, non-UTF8) distinct from JSON-level ones (malformed,
+#@ wrong shape) so the response can say something useful.
+pub type BodyError =
+  | NoBody
+  | NotUtf8
+  | JsonError J.Error
+  deriving (Debug)
+
+#@ Decode the request body as JSON into a value of type `a`.
+#@
+#@ The call site needs a type annotation to pick the right `FromJson` impl:
+#@   `body_json req : Result User BodyError`
+pub fun body_json : Request -> Result a BodyError where {a: FromJson}
+body_json req = case req.body {
+  Nothing -> Err NoBody
+  Just bs -> case BitString.to_string bs {
+    Err _ -> Err NotUtf8
+    Ok s -> case deserialize s {
+      Ok v -> Ok v
+      Err e -> Err (JsonError e)
+    }
+  }
+}
+
+#@ A reasonable default 400 response for `BodyError`. Most apps will
+#@ want this directly; apps with structured error envelopes can write
+#@ their own mapping.
+pub fun body_error_response : BodyError -> Response
+body_error_response e = case e {
+  NoBody -> text 400 "request body is required"
+  NotUtf8 -> text 400 "request body is not valid UTF-8"
+  JsonError (J.InvalidJson msg) -> text 400 $"invalid json: {msg}"
+  JsonError (J.InvalidShape exp found path) -> {
+    let loc = if List.is_empty path then "" else $" at /{String.join "/" path}"
+    text 400 $"invalid shape{loc}: expected {exp}, found {found}"
+  }
+}

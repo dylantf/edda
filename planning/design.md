@@ -332,18 +332,104 @@ uses. The router doesn't force a uniform effect set across the app.
 (See [Notes on the compiler interaction](#notes-on-the-compiler-interaction)
 below for why this took a few rounds to land.)
 
+## JSON
+
+Lives in `Edda.Json`. Built on `saga_json`'s `ToJson` / `FromJson` traits,
+so a record with `deriving (ToJson, FromJson)` round-trips through HTTP
+without a hand-written codec.
+
+### Encoding: `json`
+
+```saga
+pub fun json : Int -> a -> Response where {a: ToJson}
+```
+
+Sets `Content-Type: application/json` and serializes via `E.serialize`.
+
+```saga
+record User { id: Int, name: String } deriving (ToJson)
+
+fun show : Request -> Response
+show _ = json 200 (User { id: 1, name: "Alice" })
+```
+
+Lists, `Maybe`, tuples, and the primitive types all have built-in
+`ToJson` impls, so `json 200 [u1, u2, u3]` works without ceremony.
+
+### Decoding: `body_json` + `BodyError`
+
+```saga
+pub type BodyError =
+  | NoBody
+  | NotUtf8
+  | JsonError J.Error
+
+pub fun body_json : Request -> Result a BodyError where {a: FromJson}
+pub fun body_error_response : BodyError -> Response
+```
+
+`BodyError` keeps body-level problems (missing, not UTF-8) distinct
+from JSON-level ones (malformed, wrong shape) so the 400 message can
+say something useful. Saga needs an annotation on the call to pick the
+right `FromJson` impl:
+
+```saga
+case (body_json req : Result CreateUser BodyError) {
+  Err e -> body_error_response e
+  Ok input -> json 201 (created_from input)
+}
+```
+
+`body_error_response` is a reasonable default: it flattens the
+`InvalidShape` path into a JSON-pointer-ish string (`/email`, `/address/zip`)
+so clients see exactly where their payload went wrong. Apps with a
+structured error envelope can write their own mapping.
+
+### Two error-handling shapes
+
+Routes that decode bodies tend to end up in one of two patterns,
+demonstrated in `Demo.JsonApi`:
+
+**Inline match.** Keep the failure path in the route body. Best when a
+handful of routes parse bodies and each wants its own response shape.
+
+```saga
+fun create_user : Request -> Response
+create_user req = case (body_json req : Result CreateUser BodyError) {
+  Err e -> body_error_response e
+  Ok input -> ...
+}
+```
+
+**Per-app effect.** Declare a `Body` effect, route declares it in
+`needs`, the boundary handler maps decode failures to a response once.
+Best when many routes share the same body type and the same 400
+behavior.
+
+```saga
+effect Body { fun decode_create_user : Unit -> CreateUser }
+
+fun create_user : Request -> Response needs {Body}
+create_user _ = {
+  let input = decode_create_user! ()
+  ...  # happy path only
+}
+
+# at the boundary
+app req = ... with {
+  decode_create_user () = case (body_json req : Result CreateUser BodyError) {
+    Ok v -> resume v
+    Err e -> body_error_response e
+  }
+}
+```
+
+Edda intentionally ships only the primitive (`body_json`) and the
+default mapping (`body_error_response`). The effect pattern is just
+the [opt-in effect handler](#2-opt-in-effect-handlers) shape applied
+to body decoding — there's nothing framework-specific to add.
+
 ## Open questions
-
-### JSON
-
-We'll lean on `saga_json`. Likely shape:
-
-- `json : Int -> a -> Response where {a: ToJson}` — encode a value as a
-  JSON response
-- `body_json : Request -> Result a Error where {a: FromJson}` — decode
-  the request body
-
-Final shape depends on what `saga_json` exposes.
 
 ### Router data structure
 
@@ -367,9 +453,9 @@ have multiple real apps to see what shape feels right.
 
 ## Notes on the compiler interaction
 
-Three rounds of Saga compiler work happened while building this prototype.
-Each unblocked a piece of the design we wanted but couldn't express.
-Worth recording because they shaped the shape of things.
+Several rounds of Saga compiler work happened while building this
+prototype. Each unblocked a piece of the design we wanted but couldn't
+express. Worth recording because they shaped the shape of things.
 
 1. **Indirect call to effectful function inside `with`** — calling
    `r req with { skip () = ... }` where `r` came from a list. The CPS
@@ -386,6 +472,22 @@ Worth recording because they shaped the shape of things.
    forced up to the sub-app level. Followed by a runtime fix for
    partial-application closures whose row was solved narrowly but
    widened at the use site.
+4. **Multi-arm handler dispatch on ADT constructors** — a handler with
+   several arms keyed on variant patterns (`fail (NotFound m) = ...`,
+   `fail (BadRequest m) = ...`) silently installed only the last arm;
+   calls with other variants crashed with `case_clause`. Fixed; this is
+   what made the typed-`Fail` error pattern in `Demo.ErrorMiddleware`
+   readable instead of a single dispatch table.
+5. **`catch_panic` over BEAM exceptions** — Saga's `panic` was caught
+   cleanly, but native BEAM exceptions (`badarith` from `10 / 0`, etc.)
+   weren't surfaced as `Err`, so `with_panic_recovery` crashed instead
+   of producing a 500. Fixed; the panic-recovery wrap is now safe to
+   put at the top of any app.
+6. **Internal modules of a library dep** — a library's exposed module
+   (`SagaJson`) internally imported a non-exposed sibling
+   (`SagaJson.Parser`), and consumers couldn't resolve the transitive
+   import. Fixed at the build-map level; libraries can have private
+   internal modules without exposing them.
 
 What we did right by accident: the design tried hard to express the
 "natural" shape (heterogeneous-effect routes in a single list, wraps

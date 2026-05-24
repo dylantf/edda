@@ -6,7 +6,7 @@ main = "src/Main.saga"
 
 [library]
 module = "Edda"
-expose = ["Edda"]
+expose = ["Edda", "Edda.Json"]
 
 [deps]
 saga_http = { git = "https://github.com/dylantf/saga_http" }

@@ -1,0 +1,78 @@
+module Demo.JsonApi
+
+# A small JSON-API demo. Shows:
+#   - GET that encodes a record via `deriving (ToJson)` and `json`.
+#   - POST that decodes a body via `deriving (FromJson)` and `body_json`.
+#   - Two error-handling styles: inline match, and lifted into a Fail effect.
+
+import Edda (Request, GET, POST, route, choose, param)
+import Edda.Json (json, body_json, body_error_response, BodyError)
+import SagaHttp.Http (Response, text)
+import SagaJson.Decode (FromJson)
+import SagaJson.Encode (ToJson)
+
+record User {
+  id: Int,
+  name: String,
+  email: String,
+} deriving (Debug, ToJson, FromJson)
+
+record CreateUser {
+  name: String,
+  email: String,
+} deriving (Debug, FromJson)
+
+record CreatedUser {
+  id: Int,
+  echo: User,
+} deriving (Debug, ToJson)
+
+fun show_user : Request -> Response
+show_user req = case param "id" req {
+  Nothing -> text 400 "missing id"
+  Just id ->
+    json 200 (User { id: 1, name: $"User {id}", email: "u@example.com" })
+}
+
+fun list_users : Request -> Response
+list_users _ =
+  json 200 [
+    User { id: 1, name: "Alice", email: "alice@example.com" },
+    User { id: 2, name: "Bob", email: "bob@example.com" },
+  ]
+
+fun create_user_inline : Request -> Response
+create_user_inline req = case (body_json req : Result CreateUser BodyError) {
+  Err e -> body_error_response e
+  Ok input -> {
+    let created = User { id: 42, name: input.name, email: input.email }
+    json 201 (CreatedUser { id: 42, echo: created })
+  }
+}
+
+effect Body {
+  fun decode_create_user : Unit -> CreateUser
+}
+
+fun create_user_effect : Request -> Response needs {Body}
+create_user_effect _ = {
+  let input = decode_create_user! ()
+  let created = User { id: 99, name: input.name, email: input.email }
+  json 201 (CreatedUser { id: 99, echo: created })
+}
+
+pub fun app : Request -> Response
+app req = {
+  req
+  |> choose [
+    route GET "/users" list_users,
+    route GET "/users/:id" show_user,
+    route POST "/users" create_user_inline,
+    route POST "/users/effect" create_user_effect,
+  ]
+} with {
+  decode_create_user () = case (body_json req : Result CreateUser BodyError) {
+    Ok v -> resume v
+    Err e -> body_error_response e
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "sections": [
+    {
+      "slug": "getting-started",
+      "title": "Getting started",
+      "description": "What Edda is, install, and a hello-world server.",
+      "group": "guide"
+    },
+    {
+      "slug": "routing",
+      "title": "Routing",
+      "description": "route, choose, group, mount, and path parameters.",
+      "group": "guide"
+    },
+    {
+      "slug": "middleware",
+      "title": "Middleware",
+      "description": "The three shapes — wrap functions, opt-in effects, ambient context — and when to reach for each.",
+      "group": "guide"
+    },
+    {
+      "slug": "error-handling",
+      "title": "Error handling",
+      "description": "A typed Fail effect for early exit, mapped to HTTP statuses at the boundary, plus panic recovery for the unexpected.",
+      "group": "guide"
+    },
+    {
+      "slug": "json",
+      "title": "JSON",
+      "description": "Encode responses and decode request bodies via saga_json.",
+      "group": "guide"
+    },
+    {
+      "slug": "runtime-model",
+      "title": "Runtime model",
+      "description": "One BEAM process per request, what falls out of it (isolation, cheap concurrency, per-request state), and how supervision and cleanup plug in.",
+      "group": "guide"
+    }
+  ]
+}

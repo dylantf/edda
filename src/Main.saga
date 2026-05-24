@@ -4,6 +4,7 @@ import Std.Actor (beam_actor)
 import Std.IO (console, println)
 import Demo.AuthMiddleware as Auth
 import Demo.ErrorMiddleware as Errors
+import Demo.JsonApi as JsonApi
 import Demo.TimingMiddleware as Timing
 import Edda (Request, mount, choose, to_handler)
 import SagaHttp.Http (
@@ -41,6 +42,7 @@ home _ =
       /timing/{fast,work}
       /secret/{me,account}
       /errors/{items/42,items/13,items/x,conflict,oops,divide}
+      /json/users, /json/users/:id, POST /json/users, POST /json/users/effect
     """
 
 fun app : Request -> Response
@@ -49,6 +51,7 @@ app req =
     mount "/timing" Timing.app,
     mount "/secret" Auth.app,
     mount "/errors" Errors.app,
+    mount "/json" JsonApi.app,
     fun r -> home r,
   ] req
 
