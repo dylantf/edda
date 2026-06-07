@@ -86,7 +86,8 @@ pub effect Skip {
 # Default fallback when no route matches.
 # ---------------------------------------------------------------------------
 
-pub val not_found = text 404 "not found"
+pub fun not_found : Response
+not_found = text 404 "not found"
 
 # ---------------------------------------------------------------------------
 # Path segment helpers
@@ -121,10 +122,11 @@ pub fun route : Method -> String -> (Request -> Response needs {..e}) -> Request
 route m pattern h req =
   if req.method == m then {
     case match_prefix (path_segments pattern) (path_segments req.path) req.params {
-      Just (new_params, []) -> h { req | params: new_params }
+      Just (new_params, []) -> h ({ req | params: new_params })
       _ -> skip! ()
     }
-  } else skip! ()
+  }
+  else skip! ()
 
 # ---------------------------------------------------------------------------
 # choose — try each route in order; first one that doesn't skip wins.
@@ -147,12 +149,14 @@ choose routes req = case routes {
 #@ Captured `:name` params accumulate and are visible to sub-routes.
 pub fun group : String -> List (Request -> Response needs {Skip, ..e}) -> Request -> Response
   needs {Skip, ..e}
-group prefix routes req =
-  case match_prefix (path_segments prefix) (path_segments req.path) req.params {
-    Just (new_params, remaining) ->
-      choose routes { req | params: new_params, path: segments_to_path remaining }
-    Nothing -> skip! ()
-  }
+group prefix routes req = case match_prefix (path_segments prefix) (path_segments req.path) req.params {
+  Just (new_params, remaining) ->
+    choose routes ({ req |
+      params: new_params,
+      path: segments_to_path remaining,
+    })
+  Nothing -> skip! ()
+}
 
 # ---------------------------------------------------------------------------
 # mount — attach a fully-discharged sub-app at a prefix.
@@ -162,12 +166,11 @@ group prefix routes req =
 #@ params accumulate and are visible to the sub-app.
 pub fun mount : String -> (Request -> Response) -> Request -> Response
   needs {Skip}
-mount prefix app req =
-  case match_prefix (path_segments prefix) (path_segments req.path) req.params {
-    Just (new_params, remaining) ->
-      app { req | params: new_params, path: segments_to_path remaining }
-    Nothing -> skip! ()
-  }
+mount prefix app req = case match_prefix (path_segments prefix) (path_segments req.path) req.params {
+  Just (new_params, remaining) ->
+    app ({ req | params: new_params, path: segments_to_path remaining })
+  Nothing -> skip! ()
+}
 
 # ---------------------------------------------------------------------------
 # Boundary helpers — saga_http <-> Edda

@@ -2,8 +2,8 @@
 
 [deps.saga_json]
 git = "https://github.com/dylantf/saga_json"
-commit = "3d6f7782291d098885b474f596a7cfe5a7441d09"
+commit = "f7e980d0f40a5b73a8f7758d8a710710fa0f6eb2"
 
 [deps.saga_http]
 git = "https://github.com/dylantf/saga_http"
-commit = "15a6b277f05f77b625ff60a1efa858111db67f30"
+commit = "8608b9fe68ffd704c32716a558cfa40521aa9ec8"

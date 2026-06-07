@@ -54,7 +54,7 @@ effect Skip {
 ### not_found
 
 ```saga
-val not_found
+fun not_found : Response
 ```
 
 ## Functions
@@ -123,4 +123,3 @@ fun to_handler : Request -> Response -> Http.Request -> Response
 
 Adapt an Edda app to the `Request -> Response` shape `SagaHttp.serve`
 expects. Use as: `serve config (to_handler app)`.
-
