@@ -7,11 +7,10 @@ module Edda.Json
 import Std.BitString
 import Std.List
 import Std.String
+import Edda (Request)
 import SagaHttp.Http as Http (Response, ResponseBody, text)
 import SagaJson as J
-import SagaJson.Encode as E (ToJson, serialize)
-import SagaJson.Decode as D (FromJson, deserialize)
-import Edda (Request)
+import SagaJson.Codec (ToJson, FromJson, serialize, deserialize)
 
 #@ Encode a value as a JSON response body with the given status.
 #@ Sets `Content-Type: application/json` automatically.

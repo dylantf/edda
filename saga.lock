@@ -2,7 +2,7 @@
 
 [deps.saga_json]
 git = "https://github.com/dylantf/saga_json"
-commit = "f7e980d0f40a5b73a8f7758d8a710710fa0f6eb2"
+commit = "4beb7d7a891c0a5177fa700c245f7862275f17d6"
 
 [deps.saga_http]
 git = "https://github.com/dylantf/saga_http"

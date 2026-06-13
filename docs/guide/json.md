@@ -19,7 +19,7 @@ returns a `Response` with the given status.
 
 ```saga
 import Edda.Json (json)
-import SagaJson.Encode (ToJson)
+import SagaJson.Codec (ToJson)
 
 record User {
   id: Int,

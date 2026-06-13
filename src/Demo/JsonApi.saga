@@ -8,8 +8,7 @@ module Demo.JsonApi
 import Edda (Request, GET, POST, route, choose, param)
 import Edda.Json (json, body_json, body_error_response, BodyError)
 import SagaHttp.Http (Response, text)
-import SagaJson.Decode (FromJson)
-import SagaJson.Encode (ToJson)
+import SagaJson.Codec (ToJson, FromJson)
 
 record User {
   id: Int,
