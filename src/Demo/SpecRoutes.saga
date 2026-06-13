@@ -1,0 +1,93 @@
+module Demo.SpecRoutes
+
+# Sketch demo: build routes via the Edda.Spec builder. Same definitions
+# drive both the runtime router and the OpenAPI document at /openapi.json.
+
+import Std.List
+import Edda (Request, GET, choose, param)
+import Edda.Spec (
+  Status,
+  Success,
+  BadRequest,
+  NotFound,
+  Other,
+  TypedResponse,
+  RouteSchema,
+  OpenApiInfo,
+  JsonSchema,
+  route,
+  responds,
+  path_param,
+  performed_by,
+  as_route,
+  ok,
+  text_response,
+  json_of,
+  plain_text,
+  describe,
+  object_of,
+  array_of,
+  string_schema,
+  int_schema,
+  to_openapi,
+  scalar_handler
+)
+import SagaHttp.Http (Response, ResponseBody)
+import SagaJson.Codec (ToJson)
+
+# A sample response shape.
+record User {
+  id: Int,
+  name: String,
+} deriving (Debug, ToJson)
+
+# Hand-written schema fragment. Will eventually fall out of `deriving (Schema)`.
+# All fields are required by default; mark optional ones with `|> optional "name"`.
+fun user_schema : JsonSchema
+user_schema = object_of [("id", int_schema), ("name", string_schema)]
+
+fun show_user : Request -> TypedResponse User
+show_user req = case param "id" req {
+  Nothing -> text_response BadRequest "missing id"
+  Just id -> ok (User { id: 1, name: $"User {id}" })
+}
+
+fun list_users : Request -> TypedResponse (List User)
+list_users _ = ok [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }]
+
+fun list_users_spec : RouteSchema
+list_users_spec =
+  route GET "/users"
+  |> responds Success (json_of (array_of user_schema) |> describe "All users")
+  |> performed_by list_users
+
+fun show_user_spec : RouteSchema
+show_user_spec =
+  route GET "/users/:id"
+  |> path_param "id" "The user's id"
+  |> responds Success (json_of user_schema |> describe "The user")
+  |> responds NotFound (plain_text |> describe "User does not exist")
+  |> performed_by show_user
+
+pub fun route_specs : List RouteSchema
+route_specs = [list_users_spec, show_user_spec]
+
+fun openapi_handler : Request -> Response
+openapi_handler _ = {
+  let info = OpenApiInfo { title: "Edda Spec Demo", version: "0.1.0" }
+  let body = to_openapi info route_specs
+  Response {
+    status: 200,
+    headers: [("Content-Type", "application/json")],
+    body: Buffered body,
+  }
+}
+
+pub fun app : Request -> Response
+app req =
+  choose [
+    Edda.route GET "/openapi.json" openapi_handler,
+    Edda.route GET "/docs" (scalar_handler "/spec/openapi.json"),
+    as_route list_users_spec,
+    as_route show_user_spec,
+  ] req

@@ -5,6 +5,7 @@ import Std.IO (console, println)
 import Demo.AuthMiddleware as Auth
 import Demo.ErrorMiddleware as Errors
 import Demo.JsonApi as JsonApi
+import Demo.SpecRoutes as Spec
 import Demo.TimingMiddleware as Timing
 import Edda (Request, mount, choose, to_handler)
 import SagaHttp.Http (
@@ -52,6 +53,7 @@ app req =
     mount "/secret" Auth.app,
     mount "/errors" Errors.app,
     mount "/json" JsonApi.app,
+    mount "/spec" Spec.app,
     fun r -> home r,
   ] req
 

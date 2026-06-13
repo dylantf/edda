@@ -1,0 +1,515 @@
+#@ Endpoint specification: a fluent builder that produces a `RouteSchema`,
+#@ which the router consumes for dispatch and a spec generator consumes for
+#@ OpenAPI emission. One definition, two extractors, no runtime overhead on
+#@ the dispatch path.
+#@
+#@ Status: sketch. Schema/ContentSpec wiring is intentionally deferred —
+#@ the builder mechanics and type-check at `performed_by` are the part
+#@ worth pinning down first.
+module Edda.Spec
+
+import Std.List
+import Std.String
+import Edda (Request, Method, GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD, Custom, Skip)
+import Edda as E
+import SagaHttp.Http (Response, ResponseBody, text)
+import SagaJson (Json)
+import SagaJson.Encode as JE
+import SagaJson.Codec (ToJson)
+import Edda.Json as EJ
+
+# ---------------------------------------------------------------------------
+# Status ADT — the symbolic statuses the spec API uses, with an escape
+# hatch for unusual codes. Pattern-matched by `status_code`; the runtime
+# `Response` still carries plain `Int`.
+# ---------------------------------------------------------------------------
+
+pub type Status =
+  | Success # 200
+  | Created # 201
+  | NoContent # 204
+  | BadRequest # 400
+  | Unauthorized # 401
+  | Forbidden # 403
+  | NotFound # 404
+  | Conflict # 409
+  | Unprocessable # 422
+  | InternalError # 500
+  | Other Int
+  deriving (Eq, Debug)
+
+pub fun status_code : Status -> Int
+status_code Success = 200
+status_code Created = 201
+status_code NoContent = 204
+status_code BadRequest = 400
+status_code Unauthorized = 401
+status_code Forbidden = 403
+status_code NotFound = 404
+status_code Conflict = 409
+status_code Unprocessable = 422
+status_code InternalError = 500
+status_code (Other n) = n
+
+# ---------------------------------------------------------------------------
+# Action types — the shape of a route function.
+#
+# `Action` is the collapsed shape stored in `RouteSchema` and handed to
+# `choose`. `TypedAction a` is the builder-time shape; the phantom `a`
+# is the success-response body type, used to type-check the handler
+# against the declared response.
+# ---------------------------------------------------------------------------
+
+pub type alias Action = Request -> Response
+
+pub type alias TypedAction a = Request -> TypedResponse a
+
+# ---------------------------------------------------------------------------
+# TypedResponse — phantom-tagged Response. Zero runtime cost (just a
+# newtype). Constructed by the typed response helpers below; stripped
+# by `performed_by` when collapsing the builder.
+# ---------------------------------------------------------------------------
+
+pub type TypedResponse a = TypedResponse Response
+
+# Escape hatch: lift an arbitrary `Response` into a `TypedResponse a`.
+# Use when you need a fully custom Response (streaming, headers,
+# bespoke status) that the helpers below don't cover. The phantom
+# unifies with whatever slot it's placed into — it's a *claim*, not a
+# witness, so prefer the typed helpers when they fit.
+pub fun untyped : Response -> TypedResponse a
+untyped resp = TypedResponse resp
+
+# Success response: JSON-encoded, status 200. The most common return.
+# The body's type must match the declared success type, which the
+# compiler enforces via the phantom on `TypedResponse a`.
+pub fun ok : a -> TypedResponse a where {a: ToJson}
+ok value = TypedResponse (EJ.json 200 value)
+
+# JSON response at a custom status (e.g. 201 Created for POST routes).
+pub fun ok_status : Status -> a -> TypedResponse a where {a: ToJson}
+ok_status s value = TypedResponse (EJ.json (status_code s) value)
+
+# Plain-text response. Phantom-polymorphic so it fits any handler's
+# success-type slot — use for error paths whose body shape doesn't
+# match the declared success.
+pub fun text_response : Status -> String -> TypedResponse a
+text_response s msg = TypedResponse (text (status_code s) msg)
+
+# No-content (204). Polymorphic phantom — fits any slot.
+pub fun no_content : TypedResponse a
+no_content = TypedResponse (text 204 "")
+
+# ---------------------------------------------------------------------------
+# JsonSchema — a small ADT describing the shape of a JSON value. Used by
+# the spec generator to emit OpenAPI schema fragments. Hand-written for
+# now; a `Schema` trait that derives from types is the natural follow-up.
+# ---------------------------------------------------------------------------
+
+pub type JsonSchema =
+  | StringSchema
+  | IntSchema
+  | FloatSchema
+  | BoolSchema
+  | ArraySchema JsonSchema
+  | ObjectSchema (List (String, JsonSchema)) (List String)
+  | NullableSchema JsonSchema
+
+# Primitive builders. Constants for the leaf cases.
+pub fun string_schema : JsonSchema
+string_schema = StringSchema
+
+pub fun int_schema : JsonSchema
+int_schema = IntSchema
+
+pub fun float_schema : JsonSchema
+float_schema = FloatSchema
+
+pub fun bool_schema : JsonSchema
+bool_schema = BoolSchema
+
+pub fun array_of : JsonSchema -> JsonSchema
+array_of inner = ArraySchema inner
+
+# `object_of` takes a flat list of (key, schema). All keys default to
+# required — matching how Saga records work, where every field must be
+# present. Use `optional` to mark a specific key as not required (it
+# falls out of the `required` array in the emitted JSON Schema).
+pub fun object_of : List (String, JsonSchema) -> JsonSchema
+object_of props = ObjectSchema props (List.map (fun (k, _) -> k) props)
+
+pub fun optional : String -> JsonSchema -> JsonSchema
+optional field s = case s {
+  ObjectSchema props req ->
+    ObjectSchema props (List.filter (fun r -> r != field) req)
+  _ -> s
+}
+
+pub fun nullable_of : JsonSchema -> JsonSchema
+nullable_of inner = NullableSchema inner
+
+# ---------------------------------------------------------------------------
+# ContentSpec — describes a request body or response payload: content
+# type, optional schema, optional human description. Used by `responds`
+# and `json_body` (next refactor).
+# ---------------------------------------------------------------------------
+
+pub record ContentSpec {
+  content_type: String,
+  schema: Maybe JsonSchema,
+  description: Maybe String,
+}
+
+pub fun json_of : JsonSchema -> ContentSpec
+json_of s = ContentSpec {
+  content_type: "application/json",
+  schema: Just s,
+  description: Nothing,
+}
+
+pub fun plain_text : ContentSpec
+plain_text = ContentSpec {
+  content_type: "text/plain",
+  schema: Nothing,
+  description: Nothing,
+}
+
+pub fun no_body_spec : ContentSpec
+no_body_spec = ContentSpec {
+  content_type: "",
+  schema: Nothing,
+  description: Nothing,
+}
+
+pub fun describe : String -> ContentSpec -> ContentSpec
+describe d c = { c | description: Just d }
+
+# ---------------------------------------------------------------------------
+# Spec metadata records — what the builder accumulates.
+# ---------------------------------------------------------------------------
+
+pub record ParamMeta {
+  name: String,
+  description: String,
+}
+
+pub record BodyMeta {
+  content_type: String,
+  description: String,
+  schema: Maybe JsonSchema,
+}
+
+pub record ResponseMeta {
+  content_type: String,
+  description: Maybe String,
+  schema: Maybe JsonSchema,
+}
+
+# ---------------------------------------------------------------------------
+# RouteSchema — the internal accumulator. Built by the fluent API, read
+# by the router and the spec generator. Never constructed directly by
+# users.
+# ---------------------------------------------------------------------------
+
+pub record RouteSchema {
+  method: Method,
+  path: String,
+  params: List ParamMeta,
+  body: Maybe BodyMeta,
+  responses: List (Status, ResponseMeta),
+  action: Request -> Response,
+}
+
+# ---------------------------------------------------------------------------
+# RouteBuilder — the fluent surface. Phantom-typed on the success-response
+# type `a`. The phantom is unconstrained by individual combinators; it's
+# pinned at the terminal `performed_by` step, where the action's return
+# type must match.
+#
+# This keeps the per-combinator API loose (you can call them in any
+# order, none of them require type-juggling) while still landing the
+# one compile-time check that matters: the action does what the route
+# said it would.
+# ---------------------------------------------------------------------------
+
+pub record RouteBuilder a {
+  method: Method,
+  path: String,
+  params: List ParamMeta,
+  body: Maybe BodyMeta,
+  responses: List (Status, ResponseMeta),
+}
+
+# Start a builder for the given method and path.
+pub fun route : Method -> String -> RouteBuilder a
+route m p = RouteBuilder {
+  method: m,
+  path: p,
+  params: [],
+  body: Nothing,
+  responses: [],
+}
+
+# Document a path parameter. `name` matches a `:name` segment in `path`.
+# Stringly typed today; type-level symbol checking will move this to a
+# `Symbol` once the Schema/Symbol round-trip lands.
+pub fun path_param : String -> String -> RouteBuilder a -> RouteBuilder a
+path_param name desc b =
+  { b | params: ParamMeta { name: name, description: desc } :: b.params }
+
+# Document a JSON request body with the given schema and description.
+pub fun json_body : JsonSchema -> String -> RouteBuilder a -> RouteBuilder a
+json_body schema desc b =
+  { b |
+    body: Just (BodyMeta {
+      content_type: "application/json",
+      description: desc,
+      schema: Just schema,
+    }),
+  }
+
+# Declare a response. Adds spec metadata; doesn't constrain the phantom.
+# Use for any response shape the route may produce (success, errors,
+# alternates). The handler is checked against the success type when
+# the builder is collapsed by `performed_by`.
+pub fun responds : Status -> ContentSpec -> RouteBuilder a -> RouteBuilder a
+responds status spec b =
+  { b |
+    responses: (
+      status,
+      ResponseMeta {
+        content_type: spec.content_type,
+        description: spec.description,
+        schema: spec.schema,
+      },
+    ) :: b.responses,
+  }
+
+# Terminal step: collapse the builder into a RouteSchema by attaching
+# the action. The compiler unifies the action's return type with the
+# builder's phantom `a`, so a mismatch with the declared response type
+# would land here.
+pub fun performed_by : (Request -> TypedResponse a) -> RouteBuilder a -> RouteSchema
+performed_by typed_action b = RouteSchema {
+  method: b.method,
+  path: b.path,
+  params: List.reverse b.params,
+  body: b.body,
+  responses: List.reverse b.responses,
+  action: fun req ->
+    case typed_action req {
+      TypedResponse resp -> resp
+    },
+}
+
+# ---------------------------------------------------------------------------
+# Extraction — bridge from a collected RouteSchema to the router and to
+# the spec generator.
+# ---------------------------------------------------------------------------
+
+# Drop a RouteSchema into Edda's existing `choose` list.
+pub fun as_route : RouteSchema -> Request -> Response needs {Skip}
+as_route schema req = E.route schema.method schema.path schema.action req
+
+# ---------------------------------------------------------------------------
+# OpenAPI emission — walks a list of RouteSchemas and produces an
+# OpenAPI 3.0 document as a JSON string. Uses saga_json's Encode AST to
+# build the document and `render` it; the schemas in our metadata get
+# translated into JSON Schema fragments via `schema_to_json`.
+# ---------------------------------------------------------------------------
+
+pub record OpenApiInfo {
+  title: String,
+  version: String,
+}
+
+# Convert one of our `JsonSchema` values into a JSON-Schema-shaped Json
+# fragment suitable for embedding in an OpenAPI document.
+fun schema_to_json : JsonSchema -> Json
+schema_to_json s = case s {
+  StringSchema -> JE.object [("type", JE.string "string")]
+  IntSchema    -> JE.object [("type", JE.string "integer")]
+  FloatSchema  -> JE.object [("type", JE.string "number")]
+  BoolSchema   -> JE.object [("type", JE.string "boolean")]
+  ArraySchema inner -> JE.object [
+    ("type", JE.string "array"),
+    ("items", schema_to_json inner),
+  ]
+  ObjectSchema props required -> {
+    let prop_pairs = List.map (fun (k, v) -> (k, schema_to_json v)) props
+    let req_array = JE.array (List.map JE.string required)
+    JE.object [
+      ("type", JE.string "object"),
+      ("properties", JE.object prop_pairs),
+      ("required", req_array),
+    ]
+  }
+  NullableSchema inner -> {
+    case inner {
+      StringSchema -> JE.object [("type", JE.string "string"), ("nullable", JE.bool True)]
+      IntSchema    -> JE.object [("type", JE.string "integer"), ("nullable", JE.bool True)]
+      FloatSchema  -> JE.object [("type", JE.string "number"), ("nullable", JE.bool True)]
+      BoolSchema   -> JE.object [("type", JE.string "boolean"), ("nullable", JE.bool True)]
+      _            -> schema_to_json inner
+    }
+  }
+}
+
+# Convert Edda path syntax (`:id`) to OpenAPI path syntax (`{id}`).
+fun path_to_openapi : String -> String
+path_to_openapi p = {
+  let parts = String.split "/" p
+  let rewritten = List.map (fun seg -> case seg {
+    ":" <> name -> "{" <> name <> "}"
+    _ -> seg
+  }) parts
+  String.join "/" rewritten
+}
+
+fun method_to_lower : Method -> String
+method_to_lower GET = "get"
+method_to_lower POST = "post"
+method_to_lower PUT = "put"
+method_to_lower DELETE = "delete"
+method_to_lower PATCH = "patch"
+method_to_lower OPTIONS = "options"
+method_to_lower HEAD = "head"
+method_to_lower (Custom s) = String.to_lower s
+
+fun param_to_json : ParamMeta -> Json
+param_to_json p = JE.object [
+  ("name", JE.string p.name),
+  ("in", JE.string "path"),
+  ("required", JE.bool True),
+  ("description", JE.string p.description),
+  ("schema", JE.object [("type", JE.string "string")]),
+]
+
+fun content_to_json : ResponseMeta -> Json
+content_to_json r = case r.schema {
+  Nothing -> JE.object []
+  Just s -> JE.object [
+    (r.content_type, JE.object [("schema", schema_to_json s)]),
+  ]
+}
+
+fun response_meta_to_json : ResponseMeta -> Json
+response_meta_to_json r = {
+  let desc = case r.description {
+    Just d -> d
+    Nothing -> ""
+  }
+  case r.schema {
+    Nothing -> JE.object [("description", JE.string desc)]
+    Just _  -> JE.object [
+      ("description", JE.string desc),
+      ("content", content_to_json r),
+    ]
+  }
+}
+
+fun body_meta_to_json : BodyMeta -> Json
+body_meta_to_json b = {
+  let content = case b.schema {
+    Nothing -> JE.object []
+    Just s -> JE.object [
+      (b.content_type, JE.object [("schema", schema_to_json s)]),
+    ]
+  }
+  JE.object [
+    ("description", JE.string b.description),
+    ("required", JE.bool True),
+    ("content", content),
+  ]
+}
+
+fun operation_to_json : RouteSchema -> Json
+operation_to_json s = {
+  let params_json = JE.array (List.map param_to_json s.params)
+  let responses_json = JE.object (
+    List.map (fun (st, meta) -> (show (status_code st), response_meta_to_json meta)) s.responses
+  )
+  let base_fields = [
+    ("parameters", params_json),
+    ("responses", responses_json),
+  ]
+  let fields = case s.body {
+    Nothing -> base_fields
+    Just b -> ("requestBody", body_meta_to_json b) :: base_fields
+  }
+  JE.object fields
+}
+
+# Group routes by path so OpenAPI's `paths` object can have one entry
+# per path containing all its method operations.
+fun group_by_path : List RouteSchema -> List (String, List RouteSchema)
+group_by_path specs = case specs {
+  [] -> []
+  s :: rest -> {
+    let key = path_to_openapi s.path
+    let grouped = group_by_path rest
+    case List.find (fun (k, _) -> k == key) grouped {
+      Just _ -> List.map (fun (k, v) -> if k == key then (k, s :: v) else (k, v)) grouped
+      Nothing -> (key, [s]) :: grouped
+    }
+  }
+}
+
+fun paths_to_json : List RouteSchema -> Json
+paths_to_json specs = {
+  let grouped = group_by_path specs
+  JE.object (
+    List.map (fun (path, route_list) -> {
+      let methods = JE.object (
+        List.map (fun s -> (method_to_lower s.method, operation_to_json s)) route_list
+      )
+      (path, methods)
+    }) grouped
+  )
+}
+
+pub fun to_openapi_json : OpenApiInfo -> List RouteSchema -> Json
+to_openapi_json info specs = JE.object [
+  ("openapi", JE.string "3.0.0"),
+  ("info", JE.object [
+    ("title", JE.string info.title),
+    ("version", JE.string info.version),
+  ]),
+  ("paths", paths_to_json specs),
+]
+
+pub fun to_openapi : OpenApiInfo -> List RouteSchema -> String
+to_openapi info specs = JE.render (to_openapi_json info specs)
+
+# ---------------------------------------------------------------------------
+# Renderer: Scalar API Reference. Generates a minimal HTML page that
+# loads Scalar from a CDN and points it at the given spec URL. The whole
+# UI is client-side — all this serves is the HTML.
+# ---------------------------------------------------------------------------
+
+# Generate the HTML for a Scalar-rendered API browser pointing at `spec_url`
+# (typically `/spec/openapi.json` or wherever your OpenAPI doc is served).
+pub fun scalar_html : String -> String
+scalar_html spec_url = $"<!doctype html>
+<html>
+  <head>
+    <title>API Reference</title>
+    <meta charset=\"utf-8\" />
+    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  </head>
+  <body>
+    <script id=\"api-reference\" data-url=\"{spec_url}\"></script>
+    <script src=\"https://cdn.jsdelivr.net/npm/@scalar/api-reference\"></script>
+  </body>
+</html>
+"
+
+# Action that serves the Scalar HTML page for a given spec URL. Use
+# inline at a route definition:
+#   Edda.route GET "/docs" (scalar_handler "/openapi.json")
+pub fun scalar_handler : String -> Request -> Response
+scalar_handler spec_url _ = Response {
+  status: 200,
+  headers: [("Content-Type", "text/html; charset=utf-8")],
+  body: Buffered (scalar_html spec_url),
+}
