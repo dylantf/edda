@@ -25,26 +25,20 @@ import Edda.Spec (
   json_of,
   plain_text,
   describe,
-  object_of,
-  array_of,
-  string_schema,
-  int_schema,
+  Schema,
   to_openapi,
   scalar_handler
 )
 import SagaHttp.Http (Response, ResponseBody)
 import SagaJson.Codec (ToJson)
 
-# A sample response shape.
+# A sample response shape. `Default` provides a synthetic value at call
+# sites (`default : User`); `Schema` is derived too via the generic-walk
+# impls in Edda.Spec — no hand-written schema needed.
 record User {
   id: Int,
   name: String,
-} deriving (Debug, ToJson)
-
-# Hand-written schema fragment. Will eventually fall out of `deriving (Schema)`.
-# All fields are required by default; mark optional ones with `|> optional "name"`.
-fun user_schema : JsonSchema
-user_schema = object_of [("id", int_schema), ("name", string_schema)]
+} deriving (Debug, ToJson, Default, Schema)
 
 fun show_user : Request -> TypedResponse User
 show_user req = case param "id" req {
@@ -58,14 +52,18 @@ list_users _ = ok [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }]
 fun list_users_spec : RouteSchema
 list_users_spec =
   route GET "/users"
-  |> responds Success (json_of (array_of user_schema) |> describe "All users")
+  |> responds Success (
+       json_of (schema_of (default : List User)) |> describe "All users"
+     )
   |> performed_by list_users
 
 fun show_user_spec : RouteSchema
 show_user_spec =
   route GET "/users/:id"
   |> path_param "id" "The user's id"
-  |> responds Success (json_of user_schema |> describe "The user")
+  |> responds Success (
+       json_of (schema_of (default : User)) |> describe "The user"
+     )
   |> responds NotFound (plain_text |> describe "User does not exist")
   |> performed_by show_user
 

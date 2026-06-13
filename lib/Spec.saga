@@ -8,15 +8,30 @@
 #@ worth pinning down first.
 module Edda.Spec
 
+import Std.Base (KnownSymbol, Proxy)
+import Std.Generic (U1, Leaf, Labeled, And, Record)
+
 import Std.List
 import Std.String
-import Edda (Request, Method, GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD, Custom, Skip)
+import Edda (
+  Request,
+  Method,
+  GET,
+  POST,
+  PUT,
+  DELETE,
+  PATCH,
+  OPTIONS,
+  HEAD,
+  Custom,
+  Skip
+)
 import Edda as E
+import Edda.Json as EJ
 import SagaHttp.Http (Response, ResponseBody, text)
 import SagaJson (Json)
-import SagaJson.Encode as JE
 import SagaJson.Codec (ToJson)
-import Edda.Json as EJ
+import SagaJson.Encode as JE
 
 # ---------------------------------------------------------------------------
 # Status ADT — the symbolic statuses the spec API uses, with an escape
@@ -147,6 +162,91 @@ optional field s = case s {
 
 pub fun nullable_of : JsonSchema -> JsonSchema
 nullable_of inner = NullableSchema inner
+
+# ---------------------------------------------------------------------------
+# Schema trait — produces a `JsonSchema` from a value. The value's
+# *contents* don't matter; only its type is read. Callers typically pass
+# `(default : a)` to drive dispatch without constructing a real value by
+# hand:
+#
+#   schema_of (default : User)   #=> ObjectSchema [...]
+#
+# Once Saga gains `deriving (Schema)`, the `impl` boilerplate goes away
+# and only the call site remains.
+# ---------------------------------------------------------------------------
+
+pub trait Schema a {
+  fun schema_of : a -> JsonSchema
+}
+
+impl Schema for Int {
+  schema_of _ = IntSchema
+}
+
+impl Schema for String {
+  schema_of _ = StringSchema
+}
+
+impl Schema for Float {
+  schema_of _ = FloatSchema
+}
+
+impl Schema for Bool {
+  schema_of _ = BoolSchema
+}
+
+# `Maybe a` and `List a` need a sample of the inner type to recurse
+# through. `Default` gives us that without forcing the caller to
+# construct one.
+impl Schema for Maybe a where {a: Schema, a: Default} {
+  schema_of _ = NullableSchema (schema_of (default : a))
+}
+
+impl Schema for List a where {a: Schema, a: Default} {
+  schema_of _ = ArraySchema (schema_of (default : a))
+}
+
+# Generic-walk impls: these are what make `deriving (Schema)` work.
+# Records flatten into `Record (And (Labeled 'f1 (Leaf T1)) (Labeled 'f2 ...))`
+# trees; the impls below walk that tree and produce a fused ObjectSchema.
+
+impl Schema for U1 {
+  schema_of U1 = ObjectSchema [] []
+}
+
+impl Schema for Leaf a where {a: Schema} {
+  schema_of (Leaf x) = schema_of x
+}
+
+# A labeled field becomes a single-entry ObjectSchema. The Symbol's
+# source name is reflected via KnownSymbol; the inner schema falls out
+# of recursion.
+impl Schema for Labeled (n : Symbol) a where {n: KnownSymbol, a: Schema} {
+  schema_of (Labeled v) = {
+    let name = symbol_name (Proxy : Proxy n)
+    ObjectSchema [(name, schema_of v)] [name]
+  }
+}
+
+# Two adjacent fields combine into one ObjectSchema by merging
+# properties and required lists.
+impl Schema for And l r where {l: Schema, r: Schema} {
+  schema_of (And l r) = {
+    let l_schema = schema_of l
+    let r_schema = schema_of r
+    case (l_schema, r_schema) {
+      (ObjectSchema lp lr, ObjectSchema rp rr) ->
+        ObjectSchema (lp <> rp) (lr <> rr)
+      _ -> l_schema
+    }
+  }
+}
+
+# The Record wrapper carries the user-facing type name (ignored here)
+# and delegates to the inner field tree.
+impl Schema for Record a where {a: Schema} {
+  schema_of (Record _ inner) = schema_of inner
+}
 
 # ---------------------------------------------------------------------------
 # ContentSpec — describes a request body or response payload: content
@@ -328,13 +428,11 @@ pub record OpenApiInfo {
 fun schema_to_json : JsonSchema -> Json
 schema_to_json s = case s {
   StringSchema -> JE.object [("type", JE.string "string")]
-  IntSchema    -> JE.object [("type", JE.string "integer")]
-  FloatSchema  -> JE.object [("type", JE.string "number")]
-  BoolSchema   -> JE.object [("type", JE.string "boolean")]
-  ArraySchema inner -> JE.object [
-    ("type", JE.string "array"),
-    ("items", schema_to_json inner),
-  ]
+  IntSchema -> JE.object [("type", JE.string "integer")]
+  FloatSchema -> JE.object [("type", JE.string "number")]
+  BoolSchema -> JE.object [("type", JE.string "boolean")]
+  ArraySchema inner ->
+    JE.object [("type", JE.string "array"), ("items", schema_to_json inner)]
   ObjectSchema props required -> {
     let prop_pairs = List.map (fun (k, v) -> (k, schema_to_json v)) props
     let req_array = JE.array (List.map JE.string required)
@@ -346,11 +444,15 @@ schema_to_json s = case s {
   }
   NullableSchema inner -> {
     case inner {
-      StringSchema -> JE.object [("type", JE.string "string"), ("nullable", JE.bool True)]
-      IntSchema    -> JE.object [("type", JE.string "integer"), ("nullable", JE.bool True)]
-      FloatSchema  -> JE.object [("type", JE.string "number"), ("nullable", JE.bool True)]
-      BoolSchema   -> JE.object [("type", JE.string "boolean"), ("nullable", JE.bool True)]
-      _            -> schema_to_json inner
+      StringSchema ->
+        JE.object [("type", JE.string "string"), ("nullable", JE.bool True)]
+      IntSchema ->
+        JE.object [("type", JE.string "integer"), ("nullable", JE.bool True)]
+      FloatSchema ->
+        JE.object [("type", JE.string "number"), ("nullable", JE.bool True)]
+      BoolSchema ->
+        JE.object [("type", JE.string "boolean"), ("nullable", JE.bool True)]
+      _ -> schema_to_json inner
     }
   }
 }
@@ -359,10 +461,11 @@ schema_to_json s = case s {
 fun path_to_openapi : String -> String
 path_to_openapi p = {
   let parts = String.split "/" p
-  let rewritten = List.map (fun seg -> case seg {
-    ":" <> name -> "{" <> name <> "}"
-    _ -> seg
-  }) parts
+  let rewritten =
+    List.map (fun seg -> case seg {
+      ":" <> name -> "{" <> name <> "}"
+      _ -> seg
+    }) parts
   String.join "/" rewritten
 }
 
@@ -377,20 +480,20 @@ method_to_lower HEAD = "head"
 method_to_lower (Custom s) = String.to_lower s
 
 fun param_to_json : ParamMeta -> Json
-param_to_json p = JE.object [
-  ("name", JE.string p.name),
-  ("in", JE.string "path"),
-  ("required", JE.bool True),
-  ("description", JE.string p.description),
-  ("schema", JE.object [("type", JE.string "string")]),
-]
+param_to_json p =
+  JE.object [
+    ("name", JE.string p.name),
+    ("in", JE.string "path"),
+    ("required", JE.bool True),
+    ("description", JE.string p.description),
+    ("schema", JE.object [("type", JE.string "string")]),
+  ]
 
 fun content_to_json : ResponseMeta -> Json
 content_to_json r = case r.schema {
   Nothing -> JE.object []
-  Just s -> JE.object [
-    (r.content_type, JE.object [("schema", schema_to_json s)]),
-  ]
+  Just s ->
+    JE.object [(r.content_type, JE.object [("schema", schema_to_json s)])]
 }
 
 fun response_meta_to_json : ResponseMeta -> Json
@@ -401,10 +504,11 @@ response_meta_to_json r = {
   }
   case r.schema {
     Nothing -> JE.object [("description", JE.string desc)]
-    Just _  -> JE.object [
-      ("description", JE.string desc),
-      ("content", content_to_json r),
-    ]
+    Just _ ->
+      JE.object [
+        ("description", JE.string desc),
+        ("content", content_to_json r),
+      ]
   }
 }
 
@@ -412,9 +516,8 @@ fun body_meta_to_json : BodyMeta -> Json
 body_meta_to_json b = {
   let content = case b.schema {
     Nothing -> JE.object []
-    Just s -> JE.object [
-      (b.content_type, JE.object [("schema", schema_to_json s)]),
-    ]
+    Just s ->
+      JE.object [(b.content_type, JE.object [("schema", schema_to_json s)])]
   }
   JE.object [
     ("description", JE.string b.description),
@@ -426,13 +529,12 @@ body_meta_to_json b = {
 fun operation_to_json : RouteSchema -> Json
 operation_to_json s = {
   let params_json = JE.array (List.map param_to_json s.params)
-  let responses_json = JE.object (
-    List.map (fun (st, meta) -> (show (status_code st), response_meta_to_json meta)) s.responses
-  )
-  let base_fields = [
-    ("parameters", params_json),
-    ("responses", responses_json),
-  ]
+  let responses_json =
+    JE.object (List.map (fun (st, meta) -> (
+      show (status_code st),
+      response_meta_to_json meta,
+    )) s.responses)
+  let base_fields = [("parameters", params_json), ("responses", responses_json)]
   let fields = case s.body {
     Nothing -> base_fields
     Just b -> ("requestBody", body_meta_to_json b) :: base_fields
@@ -449,7 +551,9 @@ group_by_path specs = case specs {
     let key = path_to_openapi s.path
     let grouped = group_by_path rest
     case List.find (fun (k, _) -> k == key) grouped {
-      Just _ -> List.map (fun (k, v) -> if k == key then (k, s :: v) else (k, v)) grouped
+      Just _ ->
+        List.map (fun (k, v) ->
+          if k == key then (k, s :: v) else (k, v)) grouped
       Nothing -> (key, [s]) :: grouped
     }
   }
@@ -458,25 +562,29 @@ group_by_path specs = case specs {
 fun paths_to_json : List RouteSchema -> Json
 paths_to_json specs = {
   let grouped = group_by_path specs
-  JE.object (
-    List.map (fun (path, route_list) -> {
-      let methods = JE.object (
-        List.map (fun s -> (method_to_lower s.method, operation_to_json s)) route_list
-      )
-      (path, methods)
-    }) grouped
-  )
+  JE.object (List.map (fun (path, route_list) -> {
+    let methods =
+      JE.object (List.map (fun s -> (
+        method_to_lower s.method,
+        operation_to_json s,
+      )) route_list)
+    (path, methods)
+  }) grouped)
 }
 
 pub fun to_openapi_json : OpenApiInfo -> List RouteSchema -> Json
-to_openapi_json info specs = JE.object [
-  ("openapi", JE.string "3.0.0"),
-  ("info", JE.object [
-    ("title", JE.string info.title),
-    ("version", JE.string info.version),
-  ]),
-  ("paths", paths_to_json specs),
-]
+to_openapi_json info specs =
+  JE.object [
+    ("openapi", JE.string "3.0.0"),
+    (
+      "info",
+      JE.object [
+        ("title", JE.string info.title),
+        ("version", JE.string info.version),
+      ],
+    ),
+    ("paths", paths_to_json specs),
+  ]
 
 pub fun to_openapi : OpenApiInfo -> List RouteSchema -> String
 to_openapi info specs = JE.render (to_openapi_json info specs)
@@ -490,19 +598,8 @@ to_openapi info specs = JE.render (to_openapi_json info specs)
 # Generate the HTML for a Scalar-rendered API browser pointing at `spec_url`
 # (typically `/spec/openapi.json` or wherever your OpenAPI doc is served).
 pub fun scalar_html : String -> String
-scalar_html spec_url = $"<!doctype html>
-<html>
-  <head>
-    <title>API Reference</title>
-    <meta charset=\"utf-8\" />
-    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
-  </head>
-  <body>
-    <script id=\"api-reference\" data-url=\"{spec_url}\"></script>
-    <script src=\"https://cdn.jsdelivr.net/npm/@scalar/api-reference\"></script>
-  </body>
-</html>
-"
+scalar_html spec_url =
+  $"<!doctype html>\n<html>\n  <head>\n    <title>API Reference</title>\n    <meta charset=\"utf-8\" />\n    <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n  </head>\n  <body>\n    <script id=\"api-reference\" data-url=\"{spec_url}\"></script>\n    <script src=\"https://cdn.jsdelivr.net/npm/@scalar/api-reference\"></script>\n  </body>\n</html>\n"
 
 # Action that serves the Scalar HTML page for a given spec URL. Use
 # inline at a route definition:
