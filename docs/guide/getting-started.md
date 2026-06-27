@@ -160,6 +160,22 @@ Three things worth noticing:
 - **`choose [...]`** — the router. Each route is a function; `choose`
   tries them top to bottom.
 
+## Demos
+
+Run the example app with:
+
+```sh
+saga run
+```
+
+The demo server listens on `http://localhost:8080`.
+
+- `/form` renders and submits an `application/x-www-form-urlencoded` form. The
+  POST route decodes a `FormValues` value and preserves duplicate field names.
+- `/session` demonstrates a tiny cookie-backed login/logout flow.
+- `/session/secret` is a protected route that redirects back to `/session`
+  unless the demo session cookie is present.
+
 ## What's next
 
 - [Routing](routing.md) — the full router API.

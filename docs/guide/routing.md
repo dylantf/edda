@@ -97,8 +97,8 @@ cookie      "session"       req
 
 `header` returns the first matching header and `header_values` returns all of
 them. `query_params` and `cookies` return ordered `(name, value)` lists, so
-duplicate names are preserved. Query and cookie values from those helpers are
-raw strings.
+duplicate names are preserved. Query values from `query_params` are raw strings;
+cookies decode valid percent escapes in names and values.
 
 Use `query_values` when you want URL decoding:
 

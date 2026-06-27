@@ -76,8 +76,8 @@ record CookieOptions {
 }
 ```
 
-Options for outgoing `Set-Cookie` headers. Names and values are emitted as
-provided; no validation or encoding is performed yet.
+Options for outgoing `Set-Cookie` headers. Names and values are percent-encoded
+when emitted.
 
 ### CorsConfig
 
@@ -276,7 +276,8 @@ fun cookies : Request -> List (String, String)
 ```
 
 Parse Cookie headers into ordered `(name, value)` pairs.
-Duplicate names are preserved. Values are not percent-decoded yet.
+Duplicate names are preserved. Valid percent escapes in names and values are
+decoded.
 
 ### cookie
 
@@ -429,7 +430,8 @@ Build a binary response with `application/octet-stream`.
 fun set_cookie : String -> String -> Response -> Response
 ```
 
-Add a `Set-Cookie` response header with default options.
+Add a `Set-Cookie` response header with default options. Cookie names and
+values are percent-encoded.
 
 ### set_cookie_with
 
@@ -437,7 +439,8 @@ Add a `Set-Cookie` response header with default options.
 fun set_cookie_with : String -> String -> CookieOptions -> Response -> Response
 ```
 
-Add a `Set-Cookie` response header with explicit options.
+Add a `Set-Cookie` response header with explicit options. Cookie names and
+values are percent-encoded.
 
 ### delete_cookie
 

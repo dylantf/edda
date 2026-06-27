@@ -6,6 +6,7 @@ import Demo.AuthMiddleware as Auth
 import Demo.ErrorMiddleware as Errors
 import Demo.Form as Form
 import Demo.JsonApi as JsonApi
+import Demo.Session as Session
 import Demo.SpecRoutes as Spec
 import Demo.TimingMiddleware as Timing
 import Edda (Request, mount, choose, to_handler)
@@ -45,6 +46,7 @@ home _ =
       /secret/{me,account}
       /errors/{items/42,items/13,items/x,conflict,oops,divide}
       /form
+      /session, /session/secret
       /json/users, /json/users/:id, POST /json/users, POST /json/users/effect
     """
 
@@ -55,6 +57,7 @@ app req =
     mount "/secret" Auth.app,
     mount "/errors" Errors.app,
     mount "/form" Form.app,
+    mount "/session" Session.app,
     mount "/json" JsonApi.app,
     mount "/spec" Spec.app,
     fun r -> home r,

@@ -521,8 +521,8 @@ Core response helpers now available:
 
 Still worth adding:
 
-- Cookie value validation/encoding, `Expires`, and stricter handling for
-  `SameSite=None` plus `Secure`.
+- Cookie name validation, `Expires`, and stricter handling for `SameSite=None`
+  plus `Secure`.
 
 Core request body helpers now available:
 

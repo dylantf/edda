@@ -1,0 +1,143 @@
+module Demo.Session
+
+# Cookie-backed toy session demo. This intentionally stores a raw username in
+# a cookie so the request/response cookie helpers are easy to see in action.
+# Real session cookies should be signed or backed by server-side storage.
+
+import Edda (
+  Request,
+  GET,
+  POST,
+  route,
+  choose,
+  html,
+  redirect,
+  cookie,
+  form_value,
+  set_cookie_with,
+  delete_cookie_with,
+  default_cookie_options,
+  CookieOptions
+)
+import SagaHttp.Http (Response)
+
+fun session_cookie_name : String
+session_cookie_name = "edda_demo_user"
+
+fun session_cookie_options : CookieOptions
+session_cookie_options =
+  { default_cookie_options | path: Just "/session", http_only: True }
+
+fun escape_html : String -> String
+escape_html value =
+  value
+  |> String.replace_all "&" "&amp;"
+  |> String.replace_all "<" "&lt;"
+  |> String.replace_all ">" "&gt;"
+  |> String.replace_all "\"" "&quot;"
+
+fun login_form : Maybe String -> String
+login_form message = {
+  let notice = case message {
+    Just msg -> $"<p>{escape_html msg}</p>"
+    Nothing -> ""
+  }
+  $"""
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Edda session demo</title>
+      </head>
+      <body>
+        <h1>Edda session demo</h1>
+        {notice}
+        <form method="post" action="/session/login">
+          <p>
+            <label>
+              Username
+              <input name="username" value="dylan">
+            </label>
+          </p>
+          <button type="submit">Log in</button>
+        </form>
+      </body>
+    </html>
+    """
+}
+
+fun signed_in_page : String -> String
+signed_in_page username = {
+  let safe_user = escape_html username
+  $"""
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Edda session demo</title>
+      </head>
+      <body>
+        <h1>Edda session demo</h1>
+        <p>Restored session for <strong>{safe_user}</strong>.</p>
+        <p><a href="/session/secret">Open the secret page</a></p>
+        <form method="post" action="/session/logout">
+          <button type="submit">Log out</button>
+        </form>
+      </body>
+    </html>
+    """
+}
+
+fun secret_page : String -> String
+secret_page username = {
+  let safe_user = escape_html username
+  $"""
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Edda session secret</title>
+      </head>
+      <body>
+        <h1>Secret session page</h1>
+        <p>Hello, <strong>{safe_user}</strong>. This page was restored from your session cookie.</p>
+        <p><a href="/session">Back to the session page</a></p>
+      </body>
+    </html>
+    """
+}
+
+fun show_session : Request -> Response
+show_session req = case cookie session_cookie_name req {
+  Just username -> html 200 (signed_in_page username)
+  Nothing -> html 200 (login_form Nothing)
+}
+
+fun show_secret : Request -> Response
+show_secret req = case cookie session_cookie_name req {
+  Just username -> html 200 (secret_page username)
+  Nothing -> redirect 303 "/session"
+}
+
+fun login : Request -> Response
+login req = case form_value "username" req {
+  Ok (Just username) ->
+    redirect 303 "/session"
+    |> set_cookie_with session_cookie_name username session_cookie_options
+  Ok Nothing -> html 400 (login_form (Just "Username is required."))
+  Err _ -> html 400 (login_form (Just "Could not decode the submitted form."))
+}
+
+fun logout : Request -> Response
+logout _ =
+  redirect 303 "/session"
+  |> delete_cookie_with session_cookie_name session_cookie_options
+
+pub fun app : Request -> Response
+app req =
+  choose [
+    route GET "/" show_session,
+    route GET "/secret" show_secret,
+    route POST "/login" login,
+    route POST "/logout" logout,
+  ] req

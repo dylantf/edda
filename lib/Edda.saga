@@ -119,7 +119,7 @@ query_param name req = case List.find (fun (k, _) -> k == name) (query_params re
 
 #@ Parse Cookie headers into ordered `(name, value)` pairs.
 #@
-#@ This preserves duplicate names and does not percent-decode yet.
+#@ This preserves duplicate names and decodes valid percent escapes.
 pub fun cookies : Request -> List (String, String)
 cookies req = List.flat_map parse_cookie_header (header_values "cookie" req)
 
@@ -333,8 +333,7 @@ pub type SameSite =
 
 #@ Options for outgoing `Set-Cookie` headers.
 #@
-#@ Names and values are emitted as provided; no validation or encoding is
-#@ performed yet.
+#@ Cookie names and values are percent-encoded when emitted.
 pub record CookieOptions {
   path: Maybe String,
   domain: Maybe String,
@@ -356,10 +355,12 @@ default_cookie_options = CookieOptions {
 }
 
 #@ Add a `Set-Cookie` response header with default options.
+#@ Cookie names and values are percent-encoded.
 pub fun set_cookie : String -> String -> Response -> Response
 set_cookie name value resp = set_cookie_with name value default_cookie_options resp
 
 #@ Add a `Set-Cookie` response header with explicit options.
+#@ Cookie names and values are percent-encoded.
 pub fun set_cookie_with : String -> String -> CookieOptions -> Response -> Response
 set_cookie_with name value options resp =
   with_header "Set-Cookie" (cookie_header_value name value options) resp
@@ -460,7 +461,7 @@ decode_urlencoded_pairs parts acc = case parts {
 
 fun url_decode_component : String -> Result String UrlEncodedError
 url_decode_component value =
-  case decode_urlencoded_bytes value (BitString.to_list (BitString.from_string value)) [] {
+  case decode_percent_bytes True value (BitString.to_list (BitString.from_string value)) [] {
     Ok bytes -> case BitString.to_string (BitString.from_list (List.reverse bytes)) {
       Ok decoded -> Ok decoded
       Err _ -> Err InvalidUrlEncodedUtf8
@@ -468,16 +469,23 @@ url_decode_component value =
     Err e -> Err e
   }
 
-fun decode_urlencoded_bytes : String -> List Int -> List Int -> Result (List Int) UrlEncodedError
-decode_urlencoded_bytes original bytes acc = case bytes {
+fun decode_percent_bytes : Bool
+  -> String
+  -> List Int
+  -> List Int
+  -> Result (List Int) UrlEncodedError
+decode_percent_bytes plus_as_space original bytes acc = case bytes {
   [] -> Ok acc
-  43 :: rest -> decode_urlencoded_bytes original rest (32 :: acc)
+  43 :: rest ->
+    if plus_as_space then decode_percent_bytes plus_as_space original rest (32 :: acc)
+    else decode_percent_bytes plus_as_space original rest (43 :: acc)
   37 :: hi :: lo :: rest -> case (hex_digit hi, hex_digit lo) {
-    (Just h, Just l) -> decode_urlencoded_bytes original rest (((h * 16) + l) :: acc)
+    (Just h, Just l) ->
+      decode_percent_bytes plus_as_space original rest (((h * 16) + l) :: acc)
     _ -> Err (InvalidPercentEscape original)
   }
   37 :: _ -> Err (InvalidPercentEscape original)
-  b :: rest -> decode_urlencoded_bytes original rest (b :: acc)
+  b :: rest -> decode_percent_bytes plus_as_space original rest (b :: acc)
 }
 
 fun hex_digit : Int -> Maybe Int
@@ -498,8 +506,17 @@ parse_cookie_pair part = {
     [_] -> Nothing
     name :: rest ->
       if name == "" then Nothing
-      else Just (name, String.join "=" rest)
+      else Just (cookie_decode_component name, cookie_decode_component (String.join "=" rest))
   }
+}
+
+fun cookie_decode_component : String -> String
+cookie_decode_component value = case decode_percent_bytes False value (BitString.to_list (BitString.from_string value)) [] {
+  Ok bytes -> case BitString.to_string (BitString.from_list (List.reverse bytes)) {
+    Ok decoded -> decoded
+    Err _ -> value
+  }
+  Err _ -> value
 }
 
 fun media_type_matches : String -> String -> Bool
@@ -541,15 +558,42 @@ same_site_attr value = case value {
 
 fun cookie_header_value : String -> String -> CookieOptions -> String
 cookie_header_value name value options =
-  name
+  cookie_encode_component name
     <> "="
-    <> value
+    <> cookie_encode_component value
     <> maybe_attr "Path" options.path
     <> maybe_attr "Domain" options.domain
     <> maybe_int_attr "Max-Age" options.max_age
     <> bool_attr "HttpOnly" options.http_only
     <> bool_attr "Secure" options.secure
     <> same_site_attr options.same_site
+
+fun cookie_encode_component : String -> String
+cookie_encode_component value =
+  String.join "" (List.map cookie_encode_byte (BitString.to_list (BitString.from_string value)))
+
+fun cookie_encode_byte : Int -> String
+cookie_encode_byte byte =
+  if cookie_byte_allowed byte then BitString.to_string_unchecked (BitString.from_byte byte)
+  else percent_encode_byte byte
+
+fun cookie_byte_allowed : Int -> Bool
+cookie_byte_allowed byte =
+  byte == 33
+    || byte >= 35 && byte <= 36
+    || byte >= 38 && byte <= 43
+    || byte >= 45 && byte <= 58
+    || byte >= 60 && byte <= 91
+    || byte >= 93 && byte <= 126
+
+fun percent_encode_byte : Int -> String
+percent_encode_byte byte =
+  "%" <> hex_char (byte / 16) <> hex_char (byte % 16)
+
+fun hex_char : Int -> String
+hex_char digit =
+  if digit < 10 then BitString.to_string_unchecked (BitString.from_byte (48 + digit))
+  else BitString.to_string_unchecked (BitString.from_byte (55 + digit))
 
 fun is_cors_preflight : Request -> Bool
 is_cors_preflight req =
