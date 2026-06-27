@@ -83,6 +83,8 @@ header        : String -> Request -> Maybe String
 header_values : String -> Request -> List String
 query_params  : Request -> List (String, String)
 query_param   : String -> Request -> Maybe String
+query_values  : Request -> Result FormValues UrlEncodedError
+query_value   : String -> Request -> Result (Maybe String) UrlEncodedError
 cookies       : Request -> List (String, String)
 cookie        : String -> Request -> Maybe String
 ```
@@ -91,8 +93,9 @@ Apps can call these inline, apply pure request transforms before routing, or
 install parsed values as route-specific effects at the boundary. Avoid an
 untyped extension bag unless the language gives us a clean typed story.
 
-The first implementation keeps query and cookie values raw: it splits pairs
-and preserves duplicate keys/order, but does not percent-decode yet.
+The raw helpers keep values raw and preserve duplicate keys/order. Decoded
+query/form helpers use `FormValues`, a text-only ordered multi-map with
+`form_get`, `form_get_all`, `form_append`, `form_set`, and `form_delete`.
 
 We currently **do not** wrap `Response` — saga_http's `text`, `bytes`,
 and `stream` constructors are perfectly usable. Edda can still add small
@@ -526,13 +529,17 @@ Core request body helpers now available:
 - `body_bytes : Request -> Result BitString RequestBodyError`.
 - `body_text : Request -> Result String RequestBodyError`.
 - `require_content_type : String -> Request -> Result Unit ContentTypeError`.
+- `form_values : Request -> Result FormValues FormError` for
+  `application/x-www-form-urlencoded`.
+- `form_value : String -> Request -> Result (Maybe String) FormError`.
 - Cookie request helpers live in core now as parsers, not stored `Request`
   fields: `cookies : Request -> List (String, String)` and
   `cookie : String -> Request -> Maybe String`.
 
 Still worth adding:
 
-- Later, `form_urlencoded` for `application/x-www-form-urlencoded`.
+- Multipart form parsing as a separate `MultipartFormValues` type whose values
+  can be text or files.
 
 These should compose with the existing effect patterns: apps that want shared
 decode policy can lift these primitives into route-specific effects at the

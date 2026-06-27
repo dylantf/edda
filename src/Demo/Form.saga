@@ -1,0 +1,127 @@
+module Demo.Form
+
+# End-to-end form demo. GET renders a basic urlencoded form; POST decodes the
+# submitted FormValues, prints them to stdout, and renders them back.
+
+import Std.IO (console, println)
+import Std.List
+import Std.String
+import Edda (
+  Request,
+  GET,
+  POST,
+  route,
+  choose,
+  html,
+  form_values,
+  form_entries,
+  FormValues,
+  FormError
+)
+import SagaHttp.Http (Response)
+
+fun form_page : Request -> Response
+form_page _ =
+  html 200 """
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Edda form demo</title>
+      </head>
+      <body>
+        <h1>Edda form demo</h1>
+        <form method="post" action="/form">
+          <p>
+            <label>
+              Name
+              <input name="name" value="Alice Smith">
+            </label>
+          </p>
+          <p>
+            <label>
+              Email
+              <input name="email" value="alice@example.com">
+            </label>
+          </p>
+          <p>
+            <label>
+              Notes
+              <textarea name="notes">hello from a form</textarea>
+            </label>
+          </p>
+          <p>
+            <label>
+              <input type="checkbox" name="tags" value="demo" checked>
+              demo
+            </label>
+            <label>
+              <input type="checkbox" name="tags" value="forms" checked>
+              forms
+            </label>
+          </p>
+          <button type="submit">Submit</button>
+        </form>
+      </body>
+    </html>
+    """
+
+fun format_entry : (String, String) -> String
+format_entry entry = {
+  let (name, value) = entry
+  name <> " = " <> value
+}
+
+fun render_values : FormValues -> String
+render_values values =
+  String.join "\n" (List.map format_entry (form_entries values))
+
+fun error_message : FormError -> String
+error_message err = debug err
+
+fun submit_form : Request -> Response needs {Stdio}
+submit_form req = case form_values req {
+  Ok values -> {
+    let rendered = render_values values
+    println ("[form] submitted values:\n" <> rendered)
+    html 200 $"""
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Edda form result</title>
+        </head>
+        <body>
+          <h1>Submitted form values</h1>
+          <pre>{rendered}</pre>
+          <p><a href="/form">Back to the form</a></p>
+        </body>
+      </html>
+      """
+  }
+  Err err -> {
+    let msg = error_message err
+    println ("[form] decode error: " <> msg)
+    html 400 $"""
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Edda form error</title>
+        </head>
+        <body>
+          <h1>Invalid form submission</h1>
+          <pre>{msg}</pre>
+          <p><a href="/form">Back to the form</a></p>
+        </body>
+      </html>
+      """
+  }
+}
+
+pub fun app : Request -> Response
+app req =
+  choose [
+    route GET "/" form_page,
+    route POST "/" submit_form,
+  ] req with console

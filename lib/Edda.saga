@@ -11,6 +11,7 @@ module Edda
 import Std.List
 import Std.String
 import Std.BitString
+import Std.Int
 import SagaHttp.Http as Http (Response, ResponseBody, text)
 
 # ---------------------------------------------------------------------------
@@ -127,6 +128,102 @@ pub fun cookie : String -> Request -> Maybe String
 cookie name req = case List.find (fun (k, _) -> k == name) (cookies req) {
   Just (_, v) -> Just v
   Nothing -> Nothing
+}
+
+#@ Decoded text form/query values. Preserves insertion order and duplicates.
+pub record FormValues {
+  entries: List (String, String),
+}
+
+#@ Empty form values.
+pub fun empty_form_values : FormValues
+empty_form_values = FormValues { entries: [] }
+
+#@ Build form values from ordered entries.
+pub fun form_values_from_entries : List (String, String) -> FormValues
+form_values_from_entries entries = FormValues { entries: entries }
+
+#@ Return ordered form entries.
+pub fun form_entries : FormValues -> List (String, String)
+form_entries values = values.entries
+
+#@ Return the first value for `name`.
+pub fun form_get : String -> FormValues -> Maybe String
+form_get name values = case List.find (fun (k, _) -> k == name) values.entries {
+  Just (_, v) -> Just v
+  Nothing -> Nothing
+}
+
+#@ Return all values for `name`, preserving insertion order.
+pub fun form_get_all : String -> FormValues -> List String
+form_get_all name values = List.filter_map (fun (k, v) -> {
+  if k == name then Just v else Nothing
+}) values.entries
+
+#@ Append a value for `name`.
+pub fun form_append : String -> String -> FormValues -> FormValues
+form_append name value values =
+  { values | entries: values.entries <> [(name, value)] }
+
+#@ Replace all existing values for `name` with one value appended at the end.
+pub fun form_set : String -> String -> FormValues -> FormValues
+form_set name value values =
+  form_append name value (form_delete name values)
+
+#@ Delete all values for `name`.
+pub fun form_delete : String -> FormValues -> FormValues
+form_delete name values =
+  { values | entries: List.filter (fun (k, _) -> k != name) values.entries }
+
+#@ Errors from URL-encoded query/form decoding.
+pub type UrlEncodedError =
+  | InvalidPercentEscape String
+  | InvalidUrlEncodedUtf8
+  deriving (Debug, Eq)
+
+#@ Errors from `application/x-www-form-urlencoded` request parsing.
+pub type FormError =
+  | FormMissingBody
+  | FormBodyNotUtf8
+  | FormMissingContentType
+  | FormUnexpectedContentType String
+  | FormUrlEncodedError UrlEncodedError
+  deriving (Debug, Eq)
+
+#@ Decode the request query string as URL-encoded form values.
+pub fun query_values : Request -> Result FormValues UrlEncodedError
+query_values req = case req.query {
+  Just q -> parse_urlencoded q
+  Nothing -> Ok empty_form_values
+}
+
+#@ Decode and return the first query value for `name`.
+pub fun query_value : String -> Request -> Result (Maybe String) UrlEncodedError
+query_value name req = case query_values req {
+  Ok values -> Ok (form_get name values)
+  Err e -> Err e
+}
+
+#@ Decode an `application/x-www-form-urlencoded` request body.
+pub fun form_values : Request -> Result FormValues FormError
+form_values req = case require_content_type "application/x-www-form-urlencoded" req {
+  Ok _ -> case body_text req {
+    Ok body -> case parse_urlencoded body {
+      Ok values -> Ok values
+      Err e -> Err (FormUrlEncodedError e)
+    }
+    Err MissingBody -> Err FormMissingBody
+    Err BodyNotUtf8 -> Err FormBodyNotUtf8
+  }
+  Err MissingContentType -> Err FormMissingContentType
+  Err (UnexpectedContentType actual) -> Err (FormUnexpectedContentType actual)
+}
+
+#@ Decode and return the first form body value for `name`.
+pub fun form_value : String -> Request -> Result (Maybe String) FormError
+form_value name req = case form_values req {
+  Ok values -> Ok (form_get name values)
+  Err e -> Err e
 }
 
 #@ Errors from raw request body helpers.
@@ -337,6 +434,58 @@ parse_query_pair part =
     let (name, value) = split_first_equals part
     Just (name, value)
   }
+
+fun parse_urlencoded : String -> Result FormValues UrlEncodedError
+parse_urlencoded input = case decode_urlencoded_pairs (String.split "&" input) [] {
+  Ok entries -> Ok (FormValues { entries: List.reverse entries })
+  Err e -> Err e
+}
+
+fun decode_urlencoded_pairs : List String
+  -> List (String, String)
+  -> Result (List (String, String)) UrlEncodedError
+decode_urlencoded_pairs parts acc = case parts {
+  [] -> Ok acc
+  part :: rest ->
+    if part == "" then decode_urlencoded_pairs rest acc
+    else {
+      let (raw_name, raw_value) = split_first_equals part
+      case (url_decode_component raw_name, url_decode_component raw_value) {
+        (Ok name, Ok value) -> decode_urlencoded_pairs rest ((name, value) :: acc)
+        (Err e, _) -> Err e
+        (_, Err e) -> Err e
+      }
+    }
+}
+
+fun url_decode_component : String -> Result String UrlEncodedError
+url_decode_component value =
+  case decode_urlencoded_bytes value (BitString.to_list (BitString.from_string value)) [] {
+    Ok bytes -> case BitString.to_string (BitString.from_list (List.reverse bytes)) {
+      Ok decoded -> Ok decoded
+      Err _ -> Err InvalidUrlEncodedUtf8
+    }
+    Err e -> Err e
+  }
+
+fun decode_urlencoded_bytes : String -> List Int -> List Int -> Result (List Int) UrlEncodedError
+decode_urlencoded_bytes original bytes acc = case bytes {
+  [] -> Ok acc
+  43 :: rest -> decode_urlencoded_bytes original rest (32 :: acc)
+  37 :: hi :: lo :: rest -> case (hex_digit hi, hex_digit lo) {
+    (Just h, Just l) -> decode_urlencoded_bytes original rest (((h * 16) + l) :: acc)
+    _ -> Err (InvalidPercentEscape original)
+  }
+  37 :: _ -> Err (InvalidPercentEscape original)
+  b :: rest -> decode_urlencoded_bytes original rest (b :: acc)
+}
+
+fun hex_digit : Int -> Maybe Int
+hex_digit byte =
+  if byte >= 48 && byte <= 57 then Just (byte - 48)
+  else if byte >= 65 && byte <= 70 then Just ((byte - 65) + 10)
+  else if byte >= 97 && byte <= 102 then Just ((byte - 97) + 10)
+  else Nothing
 
 fun parse_cookie_header : String -> List (String, String)
 parse_cookie_header value = List.filter_map parse_cookie_pair (String.split ";" value)

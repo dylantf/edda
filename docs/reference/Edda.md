@@ -93,6 +93,39 @@ record CorsConfig {
 
 CORS policy for `with_cors`. Use `"*"` in `allow_origins` for wildcard origin.
 
+### FormValues
+
+```saga
+record FormValues {
+  entries: List (String, String)
+}
+```
+
+Decoded text form/query values. Preserves insertion order and duplicates.
+
+### UrlEncodedError
+
+```saga
+type UrlEncodedError =
+  | InvalidPercentEscape String
+  | InvalidUrlEncodedUtf8
+```
+
+Errors from URL-encoded query/form decoding.
+
+### FormError
+
+```saga
+type FormError =
+  | FormMissingBody
+  | FormBodyNotUtf8
+  | FormMissingContentType
+  | FormUnexpectedContentType String
+  | FormUrlEncodedError UrlEncodedError
+```
+
+Errors from `application/x-www-form-urlencoded` request parsing.
+
 ### Request
 
 ```saga
@@ -160,6 +193,14 @@ fun default_cors_config : CorsConfig
 
 A permissive CORS config for local/simple APIs.
 
+### empty_form_values
+
+```saga
+fun empty_form_values : FormValues
+```
+
+Empty form values.
+
 ## Functions
 
 ### method_str
@@ -211,6 +252,23 @@ fun query_param : String -> Request -> Maybe String
 
 Look up the first query parameter value by name.
 
+### query_values
+
+```saga
+fun query_values : Request -> Result FormValues UrlEncodedError
+```
+
+Decode the request query string as URL-encoded form values. `+` decodes to a
+space and `%XX` escapes decode as UTF-8 bytes.
+
+### query_value
+
+```saga
+fun query_value : String -> Request -> Result (Maybe String) UrlEncodedError
+```
+
+Decode and return the first query value for `name`.
+
 ### cookies
 
 ```saga
@@ -227,6 +285,78 @@ fun cookie : String -> Request -> Maybe String
 ```
 
 Look up the first cookie value by name.
+
+### form_values_from_entries
+
+```saga
+fun form_values_from_entries : List (String, String) -> FormValues
+```
+
+Build form values from ordered entries.
+
+### form_entries
+
+```saga
+fun form_entries : FormValues -> List (String, String)
+```
+
+Return ordered form entries.
+
+### form_get
+
+```saga
+fun form_get : String -> FormValues -> Maybe String
+```
+
+Return the first value for `name`.
+
+### form_get_all
+
+```saga
+fun form_get_all : String -> FormValues -> List String
+```
+
+Return all values for `name`, preserving insertion order.
+
+### form_append
+
+```saga
+fun form_append : String -> String -> FormValues -> FormValues
+```
+
+Append a value for `name`.
+
+### form_set
+
+```saga
+fun form_set : String -> String -> FormValues -> FormValues
+```
+
+Replace all existing values for `name` with one value appended at the end.
+
+### form_delete
+
+```saga
+fun form_delete : String -> FormValues -> FormValues
+```
+
+Delete all values for `name`.
+
+### form_values
+
+```saga
+fun form_values : Request -> Result FormValues FormError
+```
+
+Decode an `application/x-www-form-urlencoded` request body.
+
+### form_value
+
+```saga
+fun form_value : String -> Request -> Result (Maybe String) FormError
+```
+
+Decode and return the first form body value for `name`.
 
 ### body_bytes
 

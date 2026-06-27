@@ -97,8 +97,21 @@ cookie      "session"       req
 
 `header` returns the first matching header and `header_values` returns all of
 them. `query_params` and `cookies` return ordered `(name, value)` lists, so
-duplicate names are preserved. Query and cookie values are still raw strings;
-percent-decoding is a future parser slice.
+duplicate names are preserved. Query and cookie values from those helpers are
+raw strings.
+
+Use `query_values` when you want URL decoding:
+
+```saga
+case query_values req {
+  Ok values -> form_get "page" values
+  Err _ -> Nothing
+}
+```
+
+`query_values` returns `FormValues`, the same text-only value container used by
+`application/x-www-form-urlencoded` bodies. Multipart forms are a future
+separate type because they can contain files and per-part headers.
 
 ## `group`: inline nesting
 
