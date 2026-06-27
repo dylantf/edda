@@ -1,0 +1,153 @@
+module Edda.Router
+
+import Std.List
+import Std.String
+import Edda.Request (
+  Request,
+  RouteMatch,
+  Method
+)
+import Edda.Response (not_found)
+import SagaHttp.Http (Response)
+
+# ---------------------------------------------------------------------------
+# Skip effect — "this handler doesn't match, try the next one"
+# ---------------------------------------------------------------------------
+
+pub effect Skip {
+  fun skip : Unit -> a
+}
+
+# ---------------------------------------------------------------------------
+# Path segment helpers
+# ---------------------------------------------------------------------------
+
+fun path_segments : String -> List String
+path_segments path = String.split "/" path |> List.filter (fun s -> s != "")
+
+fun segments_to_path : List String -> String
+segments_to_path segs = "/" <> String.join "/" segs
+
+fun consumed_path : List String -> List String -> String
+consumed_path pattern_segs path_segs =
+  segments_to_path (List.take (List.length pattern_segs) path_segs)
+
+fun add_match : RouteMatch -> Request -> Request
+add_match matched req =
+  { req | matches: req.matches <> [matched], params: req.params <> matched.params }
+
+# Match a pattern (segments) against the START of path segments.
+# `:name` segments capture into the params list.
+# Returns Just (new captures, remaining segments) or Nothing.
+fun match_prefix : List String -> List String -> Maybe (List (String, String), List String)
+match_prefix pattern path = match_prefix_loop pattern path []
+
+fun match_prefix_loop : List String -> List String -> List (String, String) -> Maybe (List (String, String), List String)
+match_prefix_loop [] segs captures = Just (List.reverse captures, segs)
+match_prefix_loop (_ :: _) [] _ = Nothing
+match_prefix_loop (p :: ps) (s :: ss) captures = case p {
+  ":" <> name -> match_prefix_loop ps ss ((name, s) :: captures)
+  _ -> if p == s then match_prefix_loop ps ss captures else Nothing
+}
+
+# ---------------------------------------------------------------------------
+# route — method + pattern match; capture :params into req.params.
+# ---------------------------------------------------------------------------
+
+#@ Build a route. If method matches and the pattern fully consumes the path
+#@ (capturing any `:name` segments into params), the handler runs; otherwise
+#@ the route skips to let the next route try.
+pub fun route : Method -> String -> (Request -> Response needs {..e}) -> Request -> Response
+  needs {Skip, ..e}
+route m pattern h req =
+  if req.method == m then {
+    case match_prefix (path_segments pattern) (path_segments req.path) {
+      Just (captures, []) -> {
+        let matched = RouteMatch {
+          pattern: pattern,
+          path: req.path,
+          params: captures,
+        }
+        h (add_match matched req)
+      }
+      _ -> skip! ()
+    }
+  }
+  else skip! ()
+
+# ---------------------------------------------------------------------------
+# choose — try each route in order; first one that doesn't skip wins.
+# ---------------------------------------------------------------------------
+
+pub fun choose : List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+  needs {..e}
+choose routes req = case routes {
+  [] -> not_found
+  r :: rest -> r req with {
+    skip () = choose rest req
+  }
+}
+
+# Like `choose`, but preserves `Skip` when nothing matches. Used by `group` so
+# a prefix match only rewrites the request for inner routes; it does not claim
+# the whole prefix by turning inner misses into 404s.
+fun choose_or_skip : List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+  needs {Skip, ..e}
+choose_or_skip routes req = case routes {
+  [] -> skip! ()
+  r :: rest -> r req with {
+    skip () = choose_or_skip rest req
+  }
+}
+
+# ---------------------------------------------------------------------------
+# group — inline sub-routes sharing the parent's effect row.
+# ---------------------------------------------------------------------------
+
+#@ Match a path prefix and run the inner routes against the remainder.
+#@ Captured `:name` params accumulate and are visible to sub-routes.
+pub fun group : String -> List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+  needs {Skip, ..e}
+group prefix routes req = {
+  let prefix_segs = path_segments prefix
+  let path_segs = path_segments req.path
+  case match_prefix prefix_segs path_segs {
+    Just (captures, remaining) -> {
+      let matched_path = consumed_path prefix_segs path_segs
+      let matched = RouteMatch {
+        pattern: prefix,
+        path: matched_path,
+        params: captures,
+      }
+      let next_req = add_match matched req
+      choose_or_skip routes ({ next_req | path: segments_to_path remaining })
+    }
+    Nothing -> skip! ()
+  }
+}
+
+# ---------------------------------------------------------------------------
+# mount — attach a fully-discharged sub-app at a prefix.
+# ---------------------------------------------------------------------------
+
+#@ Mount a sub-app whose effects are already handled. Captured `:name`
+#@ params accumulate and are visible to the sub-app.
+pub fun mount : String -> (Request -> Response) -> Request -> Response
+  needs {Skip}
+mount prefix app req = {
+  let prefix_segs = path_segments prefix
+  let path_segs = path_segments req.path
+  case match_prefix prefix_segs path_segs {
+    Just (captures, remaining) -> {
+      let matched_path = consumed_path prefix_segs path_segs
+      let matched = RouteMatch {
+        pattern: prefix,
+        path: matched_path,
+        params: captures,
+      }
+      let next_req = add_match matched req
+      app ({ next_req | path: segments_to_path remaining })
+    }
+    Nothing -> skip! ()
+  }
+}

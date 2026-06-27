@@ -1,0 +1,395 @@
+module Edda.Request
+
+import Std.BitString
+import Std.List
+import Std.String
+import SagaHttp.Http as Http (Response)
+
+# ---------------------------------------------------------------------------
+# HTTP method
+# ---------------------------------------------------------------------------
+
+#@ Standard HTTP methods, with an escape hatch for non-standard verbs.
+pub type Method =
+  | GET
+  | POST
+  | PUT
+  | DELETE
+  | PATCH
+  | OPTIONS
+  | HEAD
+  | Custom String
+  deriving (Eq)
+
+pub fun method_str : Method -> String
+method_str GET = "GET"
+method_str POST = "POST"
+method_str PUT = "PUT"
+method_str DELETE = "DELETE"
+method_str PATCH = "PATCH"
+method_str OPTIONS = "OPTIONS"
+method_str HEAD = "HEAD"
+method_str (Custom s) = s
+
+fun method_from_string : String -> Method
+method_from_string s = {
+  let u = String.to_upper s
+  if u == "GET" then GET
+  else if u == "POST" then POST
+  else if u == "PUT" then PUT
+  else if u == "DELETE" then DELETE
+  else if u == "PATCH" then PATCH
+  else if u == "OPTIONS" then OPTIONS
+  else if u == "HEAD" then HEAD
+  else Custom s
+}
+
+# ---------------------------------------------------------------------------
+# Request
+# ---------------------------------------------------------------------------
+
+#@ A route or group segment that matched while routing the request.
+#@
+#@ `pattern` is the route/group pattern that matched at this level,
+#@ `path` is the concrete portion of the request path consumed by that
+#@ pattern, and `params` are the captures introduced by this match.
+pub record RouteMatch {
+  pattern: String,
+  path: String,
+  params: List (String, String),
+}
+
+#@ The framework's view of an HTTP request.
+#@
+#@ `path` reflects the current matcher's view — inside a `group`, it has the
+#@ matched prefix stripped. `original_path` is always the unmodified path
+#@ from the wire, useful for logging and correlation. `query` is the raw
+#@ origin-form query string when present.
+pub record Request {
+  method: Method,
+  path: String,
+  original_path: String,
+  query: Maybe String,
+  matches: List RouteMatch,
+  params: List (String, String),
+  headers: List (String, String),
+  body: Maybe BitString,
+}
+
+#@ Look up a captured path parameter by name.
+#@ If nested routes reuse a parameter name, the innermost capture wins.
+pub fun param : String -> Request -> Maybe String
+param name req = case List.find (fun (k, _) -> k == name) (List.reverse req.params) {
+  Just (_, v) -> Just v
+  Nothing -> Nothing
+}
+
+#@ Look up the first request header by name, case-insensitively.
+pub fun header : String -> Request -> Maybe String
+header name req = Http.find_header name req.headers
+
+#@ Look up every request header value for `name`, case-insensitively.
+pub fun header_values : String -> Request -> List String
+header_values name req = Http.find_all_headers name req.headers
+
+#@ Parse the raw query string into ordered `(name, value)` pairs.
+#@
+#@ This preserves duplicate keys and does not percent-decode yet.
+pub fun query_params : Request -> List (String, String)
+query_params req = case req.query {
+  Just q -> parse_query_string q
+  Nothing -> []
+}
+
+#@ Look up the first query parameter value by name.
+pub fun query_param : String -> Request -> Maybe String
+query_param name req = case List.find (fun (k, _) -> k == name) (query_params req) {
+  Just (_, v) -> Just v
+  Nothing -> Nothing
+}
+
+#@ Parse Cookie headers into ordered `(name, value)` pairs.
+#@
+#@ This preserves duplicate names and decodes valid percent escapes.
+pub fun cookies : Request -> List (String, String)
+cookies req = List.flat_map parse_cookie_header (header_values "cookie" req)
+
+#@ Look up the first cookie value by name.
+pub fun cookie : String -> Request -> Maybe String
+cookie name req = case List.find (fun (k, _) -> k == name) (cookies req) {
+  Just (_, v) -> Just v
+  Nothing -> Nothing
+}
+
+#@ Decoded text form/query values. Preserves insertion order and duplicates.
+pub record FormValues {
+  entries: List (String, String),
+}
+
+#@ Empty form values.
+pub fun empty_form_values : FormValues
+empty_form_values = FormValues { entries: [] }
+
+#@ Build form values from ordered entries.
+pub fun form_values_from_entries : List (String, String) -> FormValues
+form_values_from_entries entries = FormValues { entries: entries }
+
+#@ Return ordered form entries.
+pub fun form_entries : FormValues -> List (String, String)
+form_entries values = values.entries
+
+#@ Return the first value for `name`.
+pub fun form_get : String -> FormValues -> Maybe String
+form_get name values = case List.find (fun (k, _) -> k == name) values.entries {
+  Just (_, v) -> Just v
+  Nothing -> Nothing
+}
+
+#@ Return all values for `name`, preserving insertion order.
+pub fun form_get_all : String -> FormValues -> List String
+form_get_all name values = List.filter_map (fun (k, v) -> {
+  if k == name then Just v else Nothing
+}) values.entries
+
+#@ Append a value for `name`.
+pub fun form_append : String -> String -> FormValues -> FormValues
+form_append name value values =
+  { values | entries: values.entries <> [(name, value)] }
+
+#@ Replace all existing values for `name` with one value appended at the end.
+pub fun form_set : String -> String -> FormValues -> FormValues
+form_set name value values =
+  form_append name value (form_delete name values)
+
+#@ Delete all values for `name`.
+pub fun form_delete : String -> FormValues -> FormValues
+form_delete name values =
+  { values | entries: List.filter (fun (k, _) -> k != name) values.entries }
+
+#@ Errors from URL-encoded query/form decoding.
+pub type UrlEncodedError =
+  | InvalidPercentEscape String
+  | InvalidUrlEncodedUtf8
+  deriving (Debug, Eq)
+
+#@ Errors from `application/x-www-form-urlencoded` request parsing.
+pub type FormError =
+  | FormMissingBody
+  | FormBodyNotUtf8
+  | FormMissingContentType
+  | FormUnexpectedContentType String
+  | FormUrlEncodedError UrlEncodedError
+  deriving (Debug, Eq)
+
+#@ Decode the request query string as URL-encoded form values.
+pub fun query_values : Request -> Result FormValues UrlEncodedError
+query_values req = case req.query {
+  Just q -> parse_urlencoded q
+  Nothing -> Ok empty_form_values
+}
+
+#@ Decode and return the first query value for `name`.
+pub fun query_value : String -> Request -> Result (Maybe String) UrlEncodedError
+query_value name req = case query_values req {
+  Ok values -> Ok (form_get name values)
+  Err e -> Err e
+}
+
+#@ Decode an `application/x-www-form-urlencoded` request body.
+pub fun form_values : Request -> Result FormValues FormError
+form_values req = case require_content_type "application/x-www-form-urlencoded" req {
+  Ok _ -> case body_text req {
+    Ok body -> case parse_urlencoded body {
+      Ok values -> Ok values
+      Err e -> Err (FormUrlEncodedError e)
+    }
+    Err MissingBody -> Err FormMissingBody
+    Err BodyNotUtf8 -> Err FormBodyNotUtf8
+  }
+  Err MissingContentType -> Err FormMissingContentType
+  Err (UnexpectedContentType actual) -> Err (FormUnexpectedContentType actual)
+}
+
+#@ Decode and return the first form body value for `name`.
+pub fun form_value : String -> Request -> Result (Maybe String) FormError
+form_value name req = case form_values req {
+  Ok values -> Ok (form_get name values)
+  Err e -> Err e
+}
+
+#@ Errors from raw request body helpers.
+pub type RequestBodyError =
+  | MissingBody
+  | BodyNotUtf8
+  deriving (Debug, Eq)
+
+#@ Return the buffered request body bytes, or `MissingBody`.
+pub fun body_bytes : Request -> Result BitString RequestBodyError
+body_bytes req = case req.body {
+  Just body -> Ok body
+  Nothing -> Err MissingBody
+}
+
+#@ Decode the buffered request body as UTF-8 text.
+pub fun body_text : Request -> Result String RequestBodyError
+body_text req = case req.body {
+  Nothing -> Err MissingBody
+  Just body -> case BitString.to_string body {
+    Ok value -> Ok value
+    Err _ -> Err BodyNotUtf8
+  }
+}
+
+#@ Errors from content-type checks.
+pub type ContentTypeError =
+  | MissingContentType
+  | UnexpectedContentType String
+  deriving (Debug, Eq)
+
+#@ Require the request Content-Type to match `expected`.
+#@
+#@ A header with parameters, like `application/json; charset=utf-8`, matches
+#@ `application/json`.
+pub fun require_content_type : String -> Request -> Result Unit ContentTypeError
+require_content_type expected req = case header "content-type" req {
+  Nothing -> Err MissingContentType
+  Just actual ->
+    if media_type_matches expected actual then Ok ()
+    else Err (UnexpectedContentType actual)
+}
+
+# ---------------------------------------------------------------------------
+# Boundary helpers — saga_http <-> Edda
+# ---------------------------------------------------------------------------
+
+#@ Lift a SagaHttp.Http.Request into an Edda.Request.
+pub fun from_http : Http.Request -> Request
+from_http hr = Request {
+  method: method_from_string hr.method,
+  path: hr.path,
+  original_path: hr.path,
+  query: target_query hr.target,
+  matches: [],
+  params: [],
+  headers: hr.headers,
+  body: hr.body,
+}
+
+fun target_query : Http.RequestTarget -> Maybe String
+target_query target = case target {
+  Http.Origin _ q -> q
+  _ -> Nothing
+}
+
+#@ Adapt an Edda app to the `Request -> Response` shape `SagaHttp.serve`
+#@ expects. Use as: `serve config (to_handler app)`.
+pub fun to_handler : (Request -> Response) -> Http.Request -> Response
+to_handler app hr = app (from_http hr)
+
+fun split_first_equals : String -> (String, String)
+split_first_equals s = case String.split "=" s {
+  [] -> ("", "")
+  [k] -> (k, "")
+  k :: rest -> (k, String.join "=" rest)
+}
+
+fun parse_query_string : String -> List (String, String)
+parse_query_string q = List.filter_map parse_query_pair (String.split "&" q)
+
+fun parse_query_pair : String -> Maybe (String, String)
+parse_query_pair part =
+  if part == "" then Nothing
+  else {
+    let (name, value) = split_first_equals part
+    Just (name, value)
+  }
+
+fun parse_urlencoded : String -> Result FormValues UrlEncodedError
+parse_urlencoded input = case decode_urlencoded_pairs (String.split "&" input) [] {
+  Ok entries -> Ok (FormValues { entries: List.reverse entries })
+  Err e -> Err e
+}
+
+fun decode_urlencoded_pairs : List String
+  -> List (String, String)
+  -> Result (List (String, String)) UrlEncodedError
+decode_urlencoded_pairs parts acc = case parts {
+  [] -> Ok acc
+  part :: rest ->
+    if part == "" then decode_urlencoded_pairs rest acc
+    else {
+      let (raw_name, raw_value) = split_first_equals part
+      case (url_decode_component raw_name, url_decode_component raw_value) {
+        (Ok name, Ok value) -> decode_urlencoded_pairs rest ((name, value) :: acc)
+        (Err e, _) -> Err e
+        (_, Err e) -> Err e
+      }
+    }
+}
+
+fun url_decode_component : String -> Result String UrlEncodedError
+url_decode_component value =
+  case decode_percent_bytes True value (BitString.to_list (BitString.from_string value)) [] {
+    Ok bytes -> case BitString.to_string (BitString.from_list (List.reverse bytes)) {
+      Ok decoded -> Ok decoded
+      Err _ -> Err InvalidUrlEncodedUtf8
+    }
+    Err e -> Err e
+  }
+
+fun decode_percent_bytes : Bool
+  -> String
+  -> List Int
+  -> List Int
+  -> Result (List Int) UrlEncodedError
+decode_percent_bytes plus_as_space original bytes acc = case bytes {
+  [] -> Ok acc
+  43 :: rest ->
+    if plus_as_space then decode_percent_bytes plus_as_space original rest (32 :: acc)
+    else decode_percent_bytes plus_as_space original rest (43 :: acc)
+  37 :: hi :: lo :: rest -> case (hex_digit hi, hex_digit lo) {
+    (Just h, Just l) ->
+      decode_percent_bytes plus_as_space original rest (((h * 16) + l) :: acc)
+    _ -> Err (InvalidPercentEscape original)
+  }
+  37 :: _ -> Err (InvalidPercentEscape original)
+  b :: rest -> decode_percent_bytes plus_as_space original rest (b :: acc)
+}
+
+fun hex_digit : Int -> Maybe Int
+hex_digit byte =
+  if byte >= 48 && byte <= 57 then Just (byte - 48)
+  else if byte >= 65 && byte <= 70 then Just ((byte - 65) + 10)
+  else if byte >= 97 && byte <= 102 then Just ((byte - 97) + 10)
+  else Nothing
+
+fun parse_cookie_header : String -> List (String, String)
+parse_cookie_header value = List.filter_map parse_cookie_pair (String.split ";" value)
+
+fun parse_cookie_pair : String -> Maybe (String, String)
+parse_cookie_pair part = {
+  let trimmed = String.trim part
+  case String.split "=" trimmed {
+    [] -> Nothing
+    [_] -> Nothing
+    name :: rest ->
+      if name == "" then Nothing
+      else Just (cookie_decode_component name, cookie_decode_component (String.join "=" rest))
+  }
+}
+
+fun cookie_decode_component : String -> String
+cookie_decode_component value = case decode_percent_bytes False value (BitString.to_list (BitString.from_string value)) [] {
+  Ok bytes -> case BitString.to_string (BitString.from_list (List.reverse bytes)) {
+    Ok decoded -> decoded
+    Err _ -> value
+  }
+  Err _ -> value
+}
+
+fun media_type_matches : String -> String -> Bool
+media_type_matches expected actual = {
+  let e = String.to_lower expected
+  let a = String.to_lower actual
+  a == e || String.starts_with (e <> ";") a
+}

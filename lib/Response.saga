@@ -1,0 +1,285 @@
+module Edda.Response
+
+import Std.BitString
+import Std.Int
+import Std.List
+import Std.String
+import Edda.Request (
+  Request,
+  Method,
+  GET,
+  POST,
+  PUT,
+  DELETE,
+  PATCH,
+  OPTIONS,
+  HEAD,
+  method_str,
+  header
+)
+import SagaHttp.Http as Http (Response, ResponseBody, text)
+
+# ---------------------------------------------------------------------------
+# Response helpers
+# ---------------------------------------------------------------------------
+
+#@ Default fallback when no route matches.
+pub fun not_found : Response
+not_found = text 404 "not found"
+
+#@ Build an HTML response with a UTF-8 content type.
+pub fun html : Int -> String -> Response
+html status body = Response {
+  status: status,
+  headers: [("Content-Type", "text/html; charset=utf-8")],
+  body: Buffered body,
+}
+
+#@ A 204 response with an empty body.
+pub fun no_content : Response
+no_content = Response {
+  status: 204,
+  headers: [],
+  body: Buffered "",
+}
+
+#@ Build a redirect response with the given status and Location.
+pub fun redirect : Int -> String -> Response
+redirect status location = Response {
+  status: status,
+  headers: [("Location", location)],
+  body: Buffered "",
+}
+
+#@ Append a response header without removing existing values.
+pub fun with_header : String -> String -> Response -> Response
+with_header name value resp =
+  { resp | headers: resp.headers <> [(name, value)] }
+
+#@ Set or replace the response Content-Type header.
+pub fun content_type : String -> Response -> Response
+content_type value resp =
+  { resp | headers: Http.replace_header "Content-Type" value resp.headers }
+
+#@ Build a binary response with `application/octet-stream`.
+pub fun octet_stream : Int -> BitString -> Response
+octet_stream status body = Http.bytes status [("Content-Type", "application/octet-stream")] body
+
+#@ SameSite values for outgoing cookies.
+pub type SameSite =
+  | SameSiteLax
+  | SameSiteStrict
+  | SameSiteNone
+  deriving (Debug, Eq)
+
+#@ Options for outgoing `Set-Cookie` headers.
+#@
+#@ Cookie names and values are percent-encoded when emitted.
+pub record CookieOptions {
+  path: Maybe String,
+  domain: Maybe String,
+  max_age: Maybe Int,
+  http_only: Bool,
+  secure: Bool,
+  same_site: Maybe SameSite,
+}
+
+#@ Default cookie options: no attributes.
+pub fun default_cookie_options : CookieOptions
+default_cookie_options = CookieOptions {
+  path: Nothing,
+  domain: Nothing,
+  max_age: Nothing,
+  http_only: False,
+  secure: False,
+  same_site: Nothing,
+}
+
+#@ Add a `Set-Cookie` response header with default options.
+#@ Cookie names and values are percent-encoded.
+pub fun set_cookie : String -> String -> Response -> Response
+set_cookie name value resp = set_cookie_with name value default_cookie_options resp
+
+#@ Add a `Set-Cookie` response header with explicit options.
+#@ Cookie names and values are percent-encoded.
+pub fun set_cookie_with : String -> String -> CookieOptions -> Response -> Response
+set_cookie_with name value options resp =
+  with_header "Set-Cookie" (cookie_header_value name value options) resp
+
+#@ Expire a cookie with default options.
+pub fun delete_cookie : String -> Response -> Response
+delete_cookie name resp = delete_cookie_with name default_cookie_options resp
+
+#@ Expire a cookie with explicit options.
+#@
+#@ Use matching `path`/`domain` options when deleting scoped cookies.
+pub fun delete_cookie_with : String -> CookieOptions -> Response -> Response
+delete_cookie_with name options resp =
+  set_cookie_with name "" ({ options | max_age: Just 0 }) resp
+
+#@ CORS policy for `with_cors`.
+pub record CorsConfig {
+  allow_origins: List String,
+  allow_methods: List Method,
+  allow_headers: List String,
+  allow_credentials: Bool,
+  max_age: Maybe Int,
+}
+
+#@ A permissive CORS config for local/simple APIs.
+#@
+#@ Credentials are disabled, so wildcard origin is allowed.
+pub fun default_cors_config : CorsConfig
+default_cors_config = CorsConfig {
+  allow_origins: ["*"],
+  allow_methods: [GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD],
+  allow_headers: ["Content-Type", "Authorization"],
+  allow_credentials: False,
+  max_age: Nothing,
+}
+
+#@ Wrap an app with CORS response headers and preflight handling.
+pub fun with_cors : CorsConfig -> (Request -> Response needs {..e}) -> Request -> Response
+  needs {..e}
+with_cors config app req =
+  if is_cors_preflight req then cors_preflight_response config req
+  else cors_actual_response config req (app req)
+
+fun same_site_string : SameSite -> String
+same_site_string value = case value {
+  SameSiteLax -> "Lax"
+  SameSiteStrict -> "Strict"
+  SameSiteNone -> "None"
+}
+
+fun maybe_attr : String -> Maybe String -> String
+maybe_attr name value = case value {
+  Just v -> "; " <> name <> "=" <> v
+  Nothing -> ""
+}
+
+fun maybe_int_attr : String -> Maybe Int -> String
+maybe_int_attr name value = case value {
+  Just v -> "; " <> name <> "=" <> show v
+  Nothing -> ""
+}
+
+fun bool_attr : String -> Bool -> String
+bool_attr name enabled =
+  if enabled then "; " <> name
+  else ""
+
+fun same_site_attr : Maybe SameSite -> String
+same_site_attr value = case value {
+  Just v -> "; SameSite=" <> same_site_string v
+  Nothing -> ""
+}
+
+fun cookie_header_value : String -> String -> CookieOptions -> String
+cookie_header_value name value options =
+  cookie_encode_component name
+    <> "="
+    <> cookie_encode_component value
+    <> maybe_attr "Path" options.path
+    <> maybe_attr "Domain" options.domain
+    <> maybe_int_attr "Max-Age" options.max_age
+    <> bool_attr "HttpOnly" options.http_only
+    <> bool_attr "Secure" options.secure
+    <> same_site_attr options.same_site
+
+fun cookie_encode_component : String -> String
+cookie_encode_component value =
+  String.join "" (List.map cookie_encode_byte (BitString.to_list (BitString.from_string value)))
+
+fun cookie_encode_byte : Int -> String
+cookie_encode_byte byte =
+  if cookie_byte_allowed byte then BitString.to_string_unchecked (BitString.from_byte byte)
+  else percent_encode_byte byte
+
+fun cookie_byte_allowed : Int -> Bool
+cookie_byte_allowed byte =
+  byte == 33
+    || byte >= 35 && byte <= 36
+    || byte >= 38 && byte <= 43
+    || byte >= 45 && byte <= 58
+    || byte >= 60 && byte <= 91
+    || byte >= 93 && byte <= 126
+
+fun percent_encode_byte : Int -> String
+percent_encode_byte byte =
+  "%" <> hex_char (byte / 16) <> hex_char (byte % 16)
+
+fun hex_char : Int -> String
+hex_char digit =
+  if digit < 10 then BitString.to_string_unchecked (BitString.from_byte (48 + digit))
+  else BitString.to_string_unchecked (BitString.from_byte (55 + digit))
+
+fun is_cors_preflight : Request -> Bool
+is_cors_preflight req =
+  req.method == OPTIONS
+    && case header "origin" req {
+      Just _ -> case header "access-control-request-method" req {
+        Just _ -> True
+        Nothing -> False
+      }
+      Nothing -> False
+    }
+
+fun cors_preflight_response : CorsConfig -> Request -> Response
+cors_preflight_response config req =
+  no_content
+    |> add_cors_origin_headers config req
+    |> with_header "Access-Control-Allow-Methods" (cors_methods_header config)
+    |> add_cors_allow_headers config req
+    |> add_cors_max_age config
+
+fun cors_actual_response : CorsConfig -> Request -> Response -> Response
+cors_actual_response config req resp =
+  resp |> add_cors_origin_headers config req
+
+fun add_cors_origin_headers : CorsConfig -> Request -> Response -> Response
+add_cors_origin_headers config req resp = case cors_origin_value config req {
+  Just value -> {
+    let with_origin = with_header "Access-Control-Allow-Origin" value resp
+    let with_vary =
+      if value == "*" then with_origin
+      else with_header "Vary" "Origin" with_origin
+    if config.allow_credentials then with_header "Access-Control-Allow-Credentials" "true" with_vary
+    else with_vary
+  }
+  Nothing -> resp
+}
+
+fun cors_origin_value : CorsConfig -> Request -> Maybe String
+cors_origin_value config req = case header "origin" req {
+  Nothing -> Nothing
+  Just origin ->
+    if List.contains "*" config.allow_origins then {
+      if config.allow_credentials then Just origin else Just "*"
+    }
+    else if List.contains origin config.allow_origins then Just origin
+    else Nothing
+}
+
+fun cors_methods_header : CorsConfig -> String
+cors_methods_header config = String.join ", " (List.map method_str config.allow_methods)
+
+fun add_cors_allow_headers : CorsConfig -> Request -> Response -> Response
+add_cors_allow_headers config req resp = {
+  let value =
+    if List.is_empty config.allow_headers then {
+      case header "access-control-request-headers" req {
+        Just requested -> requested
+        Nothing -> ""
+      }
+    }
+    else String.join ", " config.allow_headers
+  if value == "" then resp
+  else with_header "Access-Control-Allow-Headers" value resp
+}
+
+fun add_cors_max_age : CorsConfig -> Response -> Response
+add_cors_max_age config resp = case config.max_age {
+  Just seconds -> with_header "Access-Control-Max-Age" (show seconds) resp
+  Nothing -> resp
+}
