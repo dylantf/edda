@@ -31,20 +31,73 @@ stacks as we like — per-request, per-route, per-group, anything goes.
 ### Request and Response wrapping
 
 We define our own `Edda.Request` rather than passing `SagaHttp.Request`
-through. Reasons:
+through. It should stay lean: raw-ish HTTP facts plus routing facts, not every
+parsed convenience a web app might want. Reasons:
 
-- `Edda.Request` carries a `params : Dict String String` field, populated
-  by the router as `:name` segments match. `SagaHttp.Request` has no
-  notion of route params.
+- `Edda.Request` carries route params and a `matches : List RouteMatch` trace,
+  populated by the router as `:name` segments match. `SagaHttp.Request` has no
+  notion of route params or nested route matches.
 - It carries `original_path` alongside `path` so that `group` and `mount`
   can strip the matched prefix from `path` while the original remains
   accessible to handlers that need it (logging, correlation).
-- It's our extension point for future additions (parsed query, decoded
-  body helpers) without changes upstream.
+- It is the place for URL/routing/header/body facts. Parsed query strings,
+  cookies, form bodies, auth state, and app-specific context should be helper
+  functions or effects unless they become truly universal.
+
+The target shape is roughly:
+
+```saga
+record Request {
+  method: Method,
+  # URL decomposition still needs more passes; initially query is raw.
+  path: String,          # current matcher view
+  original_path: String, # original request path
+  query: Maybe String,   # raw origin-form query, if present
+  matches: List RouteMatch,
+  params: List (String, String),
+  headers: List (String, String),
+  body: Maybe BitString,
+}
+
+record RouteMatch {
+  pattern: String,
+  path: String,
+  params: List (String, String),
+}
+```
+
+Eventually `original_path` plus `query` should likely become a fuller
+URL/request-target view: scheme/origin when present, host, port, path, query
+string, and fragment where the wire form provides them. `saga_http` already
+exposes `RequestTarget`; Edda needs to decide whether to wrap that directly or
+normalize it into an Edda-specific `Url` record.
+
+`params` is a list rather than a dict so nested matches can preserve duplicate
+names and ordering. The `param` helper returns the innermost matching value for
+ergonomic route handlers.
+
+Query and cookie parsing should be explicit:
+
+```saga
+header        : String -> Request -> Maybe String
+header_values : String -> Request -> List String
+query_params  : Request -> List (String, String)
+query_param   : String -> Request -> Maybe String
+cookies       : Request -> List (String, String)
+cookie        : String -> Request -> Maybe String
+```
+
+Apps can call these inline, apply pure request transforms before routing, or
+install parsed values as route-specific effects at the boundary. Avoid an
+untyped extension bag unless the language gives us a clean typed story.
+
+The first implementation keeps query and cookie values raw: it splits pairs
+and preserves duplicate keys/order, but does not percent-decode yet.
 
 We currently **do not** wrap `Response` — saga_http's `text`, `bytes`,
-and `stream` constructors are perfectly usable. We can add wrappers later
-if we want sugar (e.g. JSON, redirects) that doesn't fit upstream.
+and `stream` constructors are perfectly usable. Edda can still add small
+helper modules for common response shapes (JSON, HTML, redirects, headers)
+without inventing a second response type.
 
 ### The boundary helpers
 
@@ -162,7 +215,7 @@ handing the request down. Sub-app authors think in relative paths.
 ### Path parameters
 
 Stringly-typed. Pattern segments starting with `:` capture into the
-params dict:
+ordered params list:
 
 ```saga
 route GET "/users/:id" show_user
@@ -181,6 +234,10 @@ group "/users/:id" [
   route GET "/posts" list_user_posts,   # `id` visible in inner handler
 ]
 ```
+
+`Request.matches` also accumulates a `RouteMatch` for each successful
+`group`, `mount`, and `route`, preserving the matched pattern, consumed path,
+and captures from that level.
 
 #### Future exploration
 
@@ -433,6 +490,66 @@ default mapping (`body_error_response`). The effect pattern is just
 the [opt-in effect handler](#2-opt-in-effect-handlers) shape applied
 to body decoding — there's nothing framework-specific to add.
 
+## Response and body helpers
+
+The core response type should stay `SagaHttp.Http.Response`. `saga_http`
+already provides the primitive response body shapes:
+
+```saga
+text   : Int -> String -> Response
+bytes  : Int -> List (String, String) -> BitString -> Response
+stream : Int -> List (String, String) -> (Unit -> Unit needs {Chunked}) -> Response
+```
+
+Edda's job is a thin ergonomic layer for web-framework conveniences, not a
+replacement response system.
+
+Core response helpers now available:
+
+- `html : Int -> String -> Response`, setting `Content-Type: text/html; charset=utf-8`.
+- `no_content : Response`, a 204 with an empty body.
+- `redirect : Int -> String -> Response`, setting `Location`.
+- `with_header : String -> String -> Response -> Response`.
+- `content_type : String -> Response -> Response`.
+- `octet_stream : Int -> BitString -> Response`.
+- Cookie helpers: `set_cookie`, `set_cookie_with`, `delete_cookie`,
+  `delete_cookie_with`, plus `CookieOptions` for `Path`, `Domain`,
+  `Max-Age`, `HttpOnly`, `Secure`, and `SameSite`.
+
+Still worth adding:
+
+- Cookie value validation/encoding, `Expires`, and stricter handling for
+  `SameSite=None` plus `Secure`.
+
+Core request body helpers now available:
+
+- `body_bytes : Request -> Result BitString RequestBodyError`.
+- `body_text : Request -> Result String RequestBodyError`.
+- `require_content_type : String -> Request -> Result Unit ContentTypeError`.
+- Cookie request helpers live in core now as parsers, not stored `Request`
+  fields: `cookies : Request -> List (String, String)` and
+  `cookie : String -> Request -> Maybe String`.
+
+Still worth adding:
+
+- Later, `form_urlencoded` for `application/x-www-form-urlencoded`.
+
+These should compose with the existing effect patterns: apps that want shared
+decode policy can lift these primitives into route-specific effects at the
+boundary, just like the JSON example does.
+
+CORS lives in the wrap-function family rather than route matching:
+
+```saga
+with_cors : CorsConfig -> (Request -> Response needs {..e}) -> Request -> Response needs {..e}
+```
+
+The first version handles preflight `OPTIONS` requests, adds
+`Access-Control-*` headers to normal responses, and keeps policy explicit.
+`CorsConfig` covers origins, methods, headers, credentials, and max age. If
+credentials are enabled with wildcard origins, Edda echoes the request origin
+instead of emitting `*`.
+
 ## Endpoint specs and OpenAPI
 
 `Edda.Spec` is an experimental sidecar, not the future primary routing API.
@@ -475,6 +592,40 @@ Right now, ambient context requires the user to write their own boundary
 function. A `to_handler_with` that takes a "per-request handler installer"
 might be worth providing if the pattern is common enough. Defer until we
 have multiple real apps to see what shape feels right.
+
+### Static files
+
+Buffered file responses are straightforward if routes can read the file before
+returning: detect a content type, read bytes, and return a `bytes` response.
+The useful API might be a single-file helper plus a `static_dir` router helper.
+
+The hard parts are path traversal defense, MIME detection, cache headers,
+conditional requests (`ETag`, `If-None-Match`, `Last-Modified`), range
+requests, and deciding whether this belongs in Edda core or a sidecar package.
+
+### Streaming files and large responses
+
+`saga_http` supports chunked responses with a `Chunked` effect inside the stream
+producer. True file streaming needs the producer to read file chunks while also
+writing response chunks. If the producer can only need `{Chunked}`, this may
+require a `saga_http` API change rather than an Edda helper.
+
+This should get its own design pass before we promise file streaming, server
+sent events, long-lived streams, or any helper that needs cleanup after partial
+writes.
+
+### Multipart forms and uploads
+
+Multipart is intentionally deferred. It brings boundary parsing, file uploads,
+temporary storage, per-part headers, nested size limits, streaming/backpressure,
+and cleanup semantics. It probably wants a dedicated parser module and may need
+streaming request body support in `saga_http` before it is pleasant.
+
+### Content negotiation
+
+Helpers for `Accept`, `Accept-Encoding`, and variant selection are useful but
+not v1. Start with explicit response helpers and request body decoders; add
+negotiation once real apps show repeated patterns.
 
 ## Notes on the compiler interaction
 

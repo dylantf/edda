@@ -44,6 +44,20 @@ application:
 with_logging (with_panic_recovery app) req
 ```
 
+Edda ships `with_cors` as one of these wraps:
+
+```saga
+let cors = { default_cors_config |
+  allow_origins: ["https://app.example.com"],
+  allow_credentials: True,
+}
+
+with_cors cors app req
+```
+
+`with_cors` handles preflight `OPTIONS` requests itself and adds
+`Access-Control-*` headers to normal responses.
+
 ### Example: panic recovery
 
 ```saga

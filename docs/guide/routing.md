@@ -6,7 +6,7 @@ that either produces a response or signals "I don't match — try the
 next one."
 
 This is part of Edda's core API: `Request`, `Method`, `route`, `choose`,
-`group`, `mount`, `param`, `from_http`, and `to_handler`.
+`group`, `mount`, request lookup helpers, `from_http`, and `to_handler`.
 
 ## The shape of a route
 
@@ -30,8 +30,9 @@ it.
 
 Route paths are matched by segments. Empty segments are ignored, so `/users`
 and `/users/` match the same pattern. A plain segment must match exactly, and
-a segment starting with `:` captures the request segment into `req.params`.
-`route` only matches when the pattern consumes the whole current `req.path`.
+a segment starting with `:` captures the request segment into `req.params` and
+adds an entry to `req.matches`. `route` only matches when the pattern consumes
+the whole current `req.path`.
 
 ## `choose`
 
@@ -66,7 +67,7 @@ those handlers.
 
 ## Path parameters
 
-Segments starting with `:` capture into the request's `params` dict:
+Segments starting with `:` capture into the request's ordered `params` list:
 
 ```saga
 route GET "/users/:id/posts/:post_id" show_post
@@ -78,8 +79,26 @@ show_post req = case (param "id" req, param "post_id" req) {
 }
 ```
 
-`param` is `String -> Request -> Maybe String`. Captured values are
-strings; convert as needed at the call site.
+`param` is `String -> Request -> Maybe String`. Captured values are strings;
+convert as needed at the call site. If nested routes reuse a parameter name,
+`param` returns the innermost value. Use `req.params` or `req.matches` directly
+when ordering or duplicate names matter.
+
+## Request helpers
+
+`Request` stays lean: it stores the raw path/query/header/body facts and route
+matching facts, while parsed convenience data is produced by helpers.
+
+```saga
+header      "authorization" req
+query_param "page"          req
+cookie      "session"       req
+```
+
+`header` returns the first matching header and `header_values` returns all of
+them. `query_params` and `cookies` return ordered `(name, value)` lists, so
+duplicate names are preserved. Query and cookie values are still raw strings;
+percent-decoding is a future parser slice.
 
 ## `group`: inline nesting
 
@@ -112,6 +131,10 @@ group "/users/:id" [
 ```
 
 works as expected.
+
+Each successful `group`, `mount`, and `route` appends a `RouteMatch` to
+`req.matches`. This is useful for route traces, breadcrumbs, or tooling that
+wants to understand which nested patterns handled a request.
 
 ## `mount`: attach a sub-app
 
