@@ -6,8 +6,14 @@ import Edda (
   Request,
   Method,
   POST,
+  AcceptRange,
+  EncodingRange,
   MultipartFileTooLarge,
   MultipartText,
+  accept_encoding_ranges,
+  accept_ranges,
+  accepts_encoding,
+  accepts,
   default_multipart_options,
   form_entries,
   form_values,
@@ -20,6 +26,8 @@ import Edda (
   multipart_values_with,
   multipart_get,
   multipart_file,
+  preferred_content_encoding,
+  preferred_content_type,
   sanitize_filename
 )
 
@@ -108,6 +116,103 @@ tests () = {
         ("theme", "dark"),
       ]
       assert_eq (cookie "session" request) (Just "abc 123")
+    })
+
+    test "missing Accept accepts any offered content type" (fun () -> {
+      let request = req POST "/resource"
+      assert_eq (accept_ranges request) [
+        AcceptRange { media_type: "*/*", quality: 1000 },
+      ]
+      assert_eq (accepts "application/json" request) True
+      assert_eq (preferred_content_type ["text/html", "application/json"] request) (Just "text/html")
+    })
+
+    test "accept_ranges parses q-values and quoted commas" (fun () -> {
+      let request =
+        req POST "/resource"
+          |> with_header "Accept" "text/plain; note=\"a,b\"; q=0.4, application/json;q=0.75, image/png;q=0"
+      assert_eq (accept_ranges request) [
+        AcceptRange { media_type: "text/plain", quality: 400 },
+        AcceptRange { media_type: "application/json", quality: 750 },
+        AcceptRange { media_type: "image/png", quality: 0 },
+      ]
+    })
+
+    test "preferred_content_type uses q-values before server order" (fun () -> {
+      let request =
+        req POST "/resource"
+          |> with_header "Accept" "text/html;q=0.5, application/json;q=0.9"
+      assert_eq (preferred_content_type ["text/html", "application/json"] request) (Just "application/json")
+    })
+
+    test "preferred_content_type uses specificity to break q ties" (fun () -> {
+      let request =
+        req POST "/resource"
+          |> with_header "Accept" "application/*;q=0.8, application/json;q=0.8"
+      assert_eq (preferred_content_type ["application/xml", "application/json"] request) (Just "application/json")
+    })
+
+    test "q=0 marks a content type unacceptable" (fun () -> {
+      let request =
+        req POST "/resource"
+          |> with_header "Accept" "*/*;q=0, application/json;q=1"
+      assert_eq (accepts "text/html" request) False
+      assert_eq (accepts "application/json" request) True
+      assert_eq (preferred_content_type ["text/html", "application/json"] request) (Just "application/json")
+    })
+
+    test "specific q=0 overrides Accept wildcards" (fun () -> {
+      let request =
+        req POST "/resource"
+          |> with_header "Accept" "*/*;q=1, text/html;q=0"
+      assert_eq (accepts "text/html" request) False
+      assert_eq (accepts "application/json" request) True
+    })
+
+    test "missing Accept-Encoding accepts any offered encoding" (fun () -> {
+      let request = req POST "/resource"
+      assert_eq (accept_encoding_ranges request) [
+        EncodingRange { encoding: "*", quality: 1000 },
+      ]
+      assert_eq (accepts_encoding "gzip" request) True
+      assert_eq (preferred_content_encoding ["br", "gzip"] request) (Just "br")
+    })
+
+    test "Accept-Encoding parses q-values and chooses preferred encoding" (fun () -> {
+      let request =
+        req POST "/resource"
+          |> with_header "Accept-Encoding" "gzip;q=0.5, br;q=1, zstd;q=0"
+      assert_eq (accept_encoding_ranges request) [
+        EncodingRange { encoding: "gzip", quality: 500 },
+        EncodingRange { encoding: "br", quality: 1000 },
+        EncodingRange { encoding: "zstd", quality: 0 },
+      ]
+      assert_eq (preferred_content_encoding ["gzip", "br"] request) (Just "br")
+      assert_eq (accepts_encoding "zstd" request) False
+    })
+
+    test "identity encoding is acceptable unless excluded" (fun () -> {
+      let request =
+        req POST "/resource"
+          |> with_header "Accept-Encoding" "gzip;q=1"
+      assert_eq (accepts_encoding "identity" request) True
+      assert_eq (preferred_content_encoding ["identity"] request) (Just "identity")
+    })
+
+    test "specific encoding q=0 overrides wildcard" (fun () -> {
+      let request =
+        req POST "/resource"
+          |> with_header "Accept-Encoding" "*;q=1, gzip;q=0"
+      assert_eq (accepts_encoding "gzip" request) False
+      assert_eq (accepts_encoding "br" request) True
+    })
+
+    test "wildcard q=0 excludes implicit identity" (fun () -> {
+      let request =
+        req POST "/resource"
+          |> with_header "Accept-Encoding" "gzip;q=1, *;q=0"
+      assert_eq (accepts_encoding "identity" request) False
+      assert_eq (preferred_content_encoding ["identity", "gzip"] request) (Just "gzip")
     })
 
     test "sanitize_filename preserves spaces but rejects path-like names" (fun () -> {

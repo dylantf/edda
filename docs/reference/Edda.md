@@ -32,6 +32,30 @@ record RouteMatch {
 
 A route, group, or mount segment that matched while routing the request.
 
+### AcceptRange
+
+```saga
+record AcceptRange {
+  media_type: String,
+  quality: Int
+}
+```
+
+A parsed `Accept` media range. `quality` is `0..1000`, where `1000` means
+`q=1.0`.
+
+### EncodingRange
+
+```saga
+record EncodingRange {
+  encoding: String,
+  quality: Int
+}
+```
+
+A parsed `Accept-Encoding` coding range. `quality` is `0..1000`, where `1000`
+means `q=1.0`.
+
 ### RequestBodyError
 
 ```saga
@@ -345,6 +369,59 @@ fun header_values : String -> Request -> List String
 ```
 
 Look up every request header value for `name`, case-insensitively.
+
+### accept_ranges
+
+```saga
+fun accept_ranges : Request -> List AcceptRange
+```
+
+Parse `Accept` headers into ordered media ranges. Missing `Accept` means
+`*/*` at full quality.
+
+### accepts
+
+```saga
+fun accepts : String -> Request -> Bool
+```
+
+Return whether a response content type is acceptable for the request.
+
+### preferred_content_type
+
+```saga
+fun preferred_content_type : List String -> Request -> Maybe String
+```
+
+Pick the best server-offered content type. Higher q-values win, then more
+specific media ranges, then the order of the offered list.
+
+### accept_encoding_ranges
+
+```saga
+fun accept_encoding_ranges : Request -> List EncodingRange
+```
+
+Parse `Accept-Encoding` headers into ordered coding ranges. Missing
+`Accept-Encoding` means any encoding is acceptable.
+
+### accepts_encoding
+
+```saga
+fun accepts_encoding : String -> Request -> Bool
+```
+
+Return whether a response content encoding is acceptable for the request.
+
+### preferred_content_encoding
+
+```saga
+fun preferred_content_encoding : List String -> Request -> Maybe String
+```
+
+Pick the best server-offered content encoding. Higher q-values win, then
+explicit encodings beat wildcard matches, then the order of the offered list.
+`identity` is acceptable unless explicitly refused.
 
 ### query_params
 

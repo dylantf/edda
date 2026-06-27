@@ -672,9 +672,29 @@ Remaining multipart polish:
 
 ### Content negotiation
 
-Helpers for `Accept`, `Accept-Encoding`, and variant selection are useful but
-not v1. Start with explicit response helpers and request body decoders; add
-negotiation once real apps show repeated patterns.
+Core request negotiation helpers now cover the `Accept` and `Accept-Encoding`
+headers:
+
+```saga
+record AcceptRange { media_type: String, quality: Int }
+record EncodingRange { encoding: String, quality: Int }
+
+accept_ranges              : Request -> List AcceptRange
+accepts                    : String -> Request -> Bool
+preferred_content_type     : List String -> Request -> Maybe String
+accept_encoding_ranges     : Request -> List EncodingRange
+accepts_encoding           : String -> Request -> Bool
+preferred_content_encoding : List String -> Request -> Maybe String
+```
+
+`quality` is represented as `0..1000` instead of a float. Missing `Accept`
+means `*/*`; missing `Accept-Encoding` means any encoding is allowed.
+`q=0` excludes a type or encoding, and specific ranges override wildcards.
+Selection picks by q-value, then specificity, then server-offered order.
+For encodings, `identity` is acceptable unless explicitly refused.
+
+Still deferred: language negotiation and response helpers that automatically
+set `Vary`.
 
 ### Test harness
 

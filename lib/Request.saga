@@ -2,6 +2,7 @@ module Edda.Request
 
 import Std.Base (Show)
 import Std.BitString
+import Std.Int
 import Std.List
 import Std.String
 import SagaHttp.Http as Http (Response)
@@ -83,6 +84,24 @@ pub record Request {
   body: Maybe BitString,
 }
 
+#@ A parsed `Accept` media range.
+#@
+#@ `quality` is an integer from `0` to `1000`, matching HTTP's q-value
+#@ precision where `1000` means `q=1.0`.
+pub record AcceptRange {
+  media_type: String,
+  quality: Int,
+} deriving (Eq, Debug)
+
+#@ A parsed `Accept-Encoding` coding range.
+#@
+#@ `quality` is an integer from `0` to `1000`, matching HTTP's q-value
+#@ precision where `1000` means `q=1.0`.
+pub record EncodingRange {
+  encoding: String,
+  quality: Int,
+} deriving (Eq, Debug)
+
 #@ Look up a captured path parameter by name.
 #@ If nested routes reuse a parameter name, the innermost capture wins.
 pub fun param : String -> Request -> Maybe String
@@ -129,6 +148,53 @@ cookie name req = case List.find (fun (k, _) -> k == name) (cookies req) {
   Just (_, v) -> Just v
   Nothing -> Nothing
 }
+
+#@ Parse `Accept` headers into ordered media ranges.
+#@
+#@ Missing `Accept` means `*/*` with full quality.
+pub fun accept_ranges : Request -> List AcceptRange
+accept_ranges req = case header_values "accept" req {
+  [] -> [AcceptRange { media_type: "*/*", quality: 1000 }]
+  values -> List.filter_map parse_accept_range (List.flat_map split_header_list values)
+}
+
+#@ Return whether `content_type` is acceptable for the request.
+pub fun accepts : String -> Request -> Bool
+accepts content_type req = case preferred_content_type [content_type] req {
+  Just _ -> True
+  Nothing -> False
+}
+
+#@ Pick the best content type from server-offered options.
+#@
+#@ Higher q-values win, then more specific ranges, then the order of `offered`.
+pub fun preferred_content_type : List String -> Request -> Maybe String
+preferred_content_type offered req =
+  preferred_content_type_loop (accept_ranges req) offered Nothing
+
+#@ Parse `Accept-Encoding` headers into ordered coding ranges.
+#@
+#@ Missing `Accept-Encoding` means any encoding is acceptable.
+pub fun accept_encoding_ranges : Request -> List EncodingRange
+accept_encoding_ranges req = case header_values "accept-encoding" req {
+  [] -> [EncodingRange { encoding: "*", quality: 1000 }]
+  values -> List.filter_map parse_encoding_range (List.flat_map split_header_list values)
+}
+
+#@ Return whether `encoding` is acceptable for the request.
+pub fun accepts_encoding : String -> Request -> Bool
+accepts_encoding encoding req = case preferred_content_encoding [encoding] req {
+  Just _ -> True
+  Nothing -> False
+}
+
+#@ Pick the best content encoding from server-offered options.
+#@
+#@ Higher q-values win, then explicit encodings beat wildcard matches, then the
+#@ order of `offered` wins. `identity` is acceptable unless explicitly refused.
+pub fun preferred_content_encoding : List String -> Request -> Maybe String
+preferred_content_encoding offered req =
+  preferred_content_encoding_loop (accept_encoding_ranges req) offered Nothing
 
 #@ Decoded text form/query values. Preserves insertion order and duplicates.
 pub record FormValues {
@@ -568,6 +634,281 @@ header_value name headers = case List.find (fun (k, _) -> k
   Nothing -> Nothing
 }
 
+record AcceptCandidate {
+  content_type: String,
+  quality: Int,
+  specificity: Int,
+}
+
+record EncodingCandidate {
+  encoding: String,
+  quality: Int,
+  specificity: Int,
+}
+
+fun parse_accept_range : String -> Maybe AcceptRange
+parse_accept_range part = {
+  let media_type = media_type_only part
+  if media_type == "" then Nothing
+  else Just (AcceptRange {
+    media_type: media_type,
+    quality: accept_quality part,
+  })
+}
+
+fun parse_encoding_range : String -> Maybe EncodingRange
+parse_encoding_range part = {
+  let encoding = String.to_lower (String.trim (first_header_part part))
+  if encoding == "" then Nothing
+  else Just (EncodingRange {
+    encoding: encoding,
+    quality: accept_quality part,
+  })
+}
+
+fun accept_quality : String -> Int
+accept_quality part = case header_param "q" part {
+  Just q -> case parse_quality q {
+    Just value -> value
+    Nothing -> 0
+  }
+  Nothing -> 1000
+}
+
+fun parse_quality : String -> Maybe Int
+parse_quality value = case String.split "." (String.trim value) {
+  [whole] -> case Int.parse whole {
+    Just 0 -> Just 0
+    Just 1 -> Just 1000
+    _ -> Nothing
+  }
+  [whole, fraction] ->
+    if whole == "0" then quality_fraction fraction
+    else if whole == "1" then case quality_fraction fraction {
+      Just 0 -> Just 1000
+      _ -> Nothing
+    }
+    else Nothing
+  _ -> Nothing
+}
+
+fun quality_fraction : String -> Maybe Int
+quality_fraction fraction =
+  if fraction == "" || String.length fraction > 3 || not (String.is_digit fraction) then Nothing
+  else case Int.parse fraction {
+    Just value -> case String.length fraction {
+      1 -> Just (value * 100)
+      2 -> Just (value * 10)
+      3 -> Just value
+      _ -> Nothing
+    }
+    Nothing -> Nothing
+  }
+
+fun preferred_content_type_loop : List AcceptRange
+  -> List String
+  -> Maybe AcceptCandidate
+  -> Maybe String
+preferred_content_type_loop ranges offered best = case offered {
+  [] -> case best {
+    Just candidate -> Just candidate.content_type
+    Nothing -> Nothing
+  }
+  content_type :: rest -> {
+    let next_best = case best_accept_candidate ranges content_type {
+      Just candidate -> case best {
+        Just current ->
+          if accept_candidate_better candidate current then Just candidate
+          else best
+        Nothing -> Just candidate
+      }
+      Nothing -> best
+    }
+    preferred_content_type_loop ranges rest next_best
+  }
+}
+
+fun preferred_content_encoding_loop : List EncodingRange
+  -> List String
+  -> Maybe EncodingCandidate
+  -> Maybe String
+preferred_content_encoding_loop ranges offered best = case offered {
+  [] -> case best {
+    Just candidate -> Just candidate.encoding
+    Nothing -> Nothing
+  }
+  encoding :: rest -> {
+    let next_best = case best_encoding_candidate ranges encoding {
+      Just candidate -> case best {
+        Just current ->
+          if encoding_candidate_better candidate current then Just candidate
+          else best
+        Nothing -> Just candidate
+      }
+      Nothing -> best
+    }
+    preferred_content_encoding_loop ranges rest next_best
+  }
+}
+
+fun best_accept_candidate : List AcceptRange -> String -> Maybe AcceptCandidate
+best_accept_candidate ranges content_type = case best_accept_candidate_loop ranges content_type Nothing {
+  Just candidate ->
+    if candidate.quality > 0 then Just candidate
+    else Nothing
+  Nothing -> Nothing
+}
+
+fun best_accept_candidate_loop : List AcceptRange
+  -> String
+  -> Maybe AcceptCandidate
+  -> Maybe AcceptCandidate
+best_accept_candidate_loop ranges content_type best = case ranges {
+  [] -> best
+  range :: rest -> {
+    let specificity = accept_specificity range.media_type content_type
+    let next_best =
+      if specificity >= 0 then {
+        let candidate = AcceptCandidate {
+          content_type: content_type,
+          quality: range.quality,
+          specificity: specificity,
+        }
+        case best {
+          Just current ->
+            if more_specific_accept_candidate candidate current then Just candidate
+            else best
+          Nothing -> Just candidate
+        }
+      }
+      else best
+    best_accept_candidate_loop rest content_type next_best
+  }
+}
+
+fun accept_candidate_better : AcceptCandidate -> AcceptCandidate -> Bool
+accept_candidate_better candidate current =
+  candidate.quality > current.quality
+    || (candidate.quality == current.quality
+      && candidate.specificity > current.specificity)
+
+fun best_encoding_candidate : List EncodingRange -> String -> Maybe EncodingCandidate
+best_encoding_candidate ranges encoding = {
+  let normalized = String.to_lower encoding
+  let explicit = best_encoding_candidate_loop ranges normalized Nothing
+  let candidate = case explicit {
+    Just value -> Just value
+    Nothing -> implicit_identity_candidate normalized ranges
+  }
+  case candidate {
+    Just value ->
+      if value.quality > 0 then Just value
+      else Nothing
+    Nothing -> Nothing
+  }
+}
+
+fun best_encoding_candidate_loop : List EncodingRange
+  -> String
+  -> Maybe EncodingCandidate
+  -> Maybe EncodingCandidate
+best_encoding_candidate_loop ranges encoding best = case ranges {
+  [] -> best
+  range :: rest -> {
+    let specificity = encoding_specificity range.encoding encoding
+    let next_best =
+      if specificity >= 0 then {
+        let candidate = EncodingCandidate {
+          encoding: encoding,
+          quality: range.quality,
+          specificity: specificity,
+        }
+        case best {
+          Just current ->
+            if more_specific_encoding_candidate candidate current then Just candidate
+            else best
+          Nothing -> Just candidate
+        }
+      }
+      else best
+    best_encoding_candidate_loop rest encoding next_best
+  }
+}
+
+fun implicit_identity_candidate : String -> List EncodingRange -> Maybe EncodingCandidate
+implicit_identity_candidate encoding ranges =
+  if encoding == "identity" && implicit_identity_quality ranges > 0 then Just (EncodingCandidate {
+    encoding: encoding,
+    quality: implicit_identity_quality ranges,
+    specificity: 1,
+  })
+  else Nothing
+
+fun implicit_identity_quality : List EncodingRange -> Int
+implicit_identity_quality ranges = case List.find (fun r -> r.encoding
+  == "identity") ranges {
+  Just r -> r.quality
+  Nothing -> case List.find (fun r -> r.encoding == "*") ranges {
+    Just r -> r.quality
+    Nothing -> 1000
+  }
+}
+
+fun encoding_candidate_better : EncodingCandidate -> EncodingCandidate -> Bool
+encoding_candidate_better candidate current =
+  candidate.quality > current.quality
+    || (candidate.quality == current.quality
+      && candidate.specificity > current.specificity)
+
+fun more_specific_accept_candidate : AcceptCandidate -> AcceptCandidate -> Bool
+more_specific_accept_candidate candidate current =
+  candidate.specificity > current.specificity
+    || (candidate.specificity == current.specificity
+      && candidate.quality > current.quality)
+
+fun more_specific_encoding_candidate : EncodingCandidate -> EncodingCandidate -> Bool
+more_specific_encoding_candidate candidate current =
+  candidate.specificity > current.specificity
+    || (candidate.specificity == current.specificity
+      && candidate.quality > current.quality)
+
+fun encoding_specificity : String -> String -> Int
+encoding_specificity range encoding =
+  if range == "*" then 0
+  else if range == encoding then 1
+  else -1
+
+fun accept_specificity : String -> String -> Int
+accept_specificity range content_type = {
+  let range_type = media_type_only range
+  let offered_type = media_type_only content_type
+  case (media_parts range_type, media_parts offered_type) {
+    (Just (rt, rs), Just (ot, os)) ->
+      if rt == "*" && rs == "*" then 0
+      else if rt == ot && rs == "*" then 1
+      else if rt == ot && rs == os then 2
+      else -1
+    _ -> -1
+  }
+}
+
+fun media_type_only : String -> String
+media_type_only value = String.to_lower (String.trim (first_header_part value))
+
+fun first_header_part : String -> String
+first_header_part value = case split_header_params value {
+  part :: _ -> part
+  [] -> ""
+}
+
+fun media_parts : String -> Maybe (String, String)
+media_parts media = case String.split "/" media {
+  [typ, subtype] ->
+    if typ == "" || subtype == "" then Nothing
+    else Just (typ, subtype)
+  _ -> Nothing
+}
+
 fun header_param : String -> String -> Maybe String
 header_param name value = {
   let parts = split_header_params value
@@ -588,27 +929,47 @@ parse_header_param part = {
 
 fun split_header_params : String -> List String
 split_header_params value =
-  List.map bytes_to_string (split_header_param_bytes (BitString.to_list (BitString.from_string value)) [] [] False False)
+  List.map bytes_to_string (split_quoted_bytes 59 (BitString.to_list (BitString.from_string value)) [] [] False False)
 
-fun split_header_param_bytes : List Int
+fun split_header_list : String -> List String
+split_header_list value =
+  List.map bytes_to_string (split_quoted_bytes 44 (BitString.to_list (BitString.from_string value)) [] [] False False)
+
+fun split_quoted_bytes : Int
+  -> List Int
   -> List Int
   -> List (List Int)
   -> Bool
   -> Bool
   -> List (List Int)
-split_header_param_bytes bytes current acc in_quotes escaped = case bytes {
+split_quoted_bytes separator bytes current acc in_quotes escaped = case bytes {
   [] -> List.reverse (List.reverse current :: acc)
-  59 :: rest ->
-    if in_quotes then split_header_param_bytes rest (59 :: current) acc in_quotes False
-    else split_header_param_bytes rest [] (List.reverse current :: acc) False False
-  34 :: rest ->
-    if escaped then split_header_param_bytes rest (34 :: current) acc in_quotes False
-    else split_header_param_bytes rest (34 :: current) acc (not in_quotes) False
-  92 :: rest ->
-    if in_quotes && not escaped then split_header_param_bytes rest (92 :: current) acc in_quotes True
-    else split_header_param_bytes rest (92 :: current) acc in_quotes False
-  b :: rest -> split_header_param_bytes rest (b :: current) acc in_quotes False
+  b :: rest ->
+    if b == separator then {
+      if in_quotes then split_quoted_bytes separator rest (b :: current) acc in_quotes False
+      else split_quoted_bytes separator rest [] (List.reverse current :: acc) False False
+    }
+    else split_quoted_non_separator separator b rest current acc in_quotes escaped
 }
+
+fun split_quoted_non_separator : Int
+  -> Int
+  -> List Int
+  -> List Int
+  -> List (List Int)
+  -> Bool
+  -> Bool
+  -> List (List Int)
+split_quoted_non_separator separator byte rest current acc in_quotes escaped =
+  if byte == 34 then {
+    if escaped then split_quoted_bytes separator rest (34 :: current) acc in_quotes False
+    else split_quoted_bytes separator rest (34 :: current) acc (not in_quotes) False
+  }
+  else if byte == 92 then {
+    if in_quotes && not escaped then split_quoted_bytes separator rest (92 :: current) acc in_quotes True
+    else split_quoted_bytes separator rest (92 :: current) acc in_quotes False
+  }
+  else split_quoted_bytes separator rest (byte :: current) acc in_quotes False
 
 fun decode_header_param_value : String -> String
 decode_header_param_value value =
