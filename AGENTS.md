@@ -9,10 +9,8 @@ schema builder. Demo applications live in `src/`, with `src/Main.saga` wiring
 the demo server and `src/Demo/*.saga` showing routing, middleware, errors,
 JSON, and specs. User-facing docs live in `docs/guide/` and generated-style API
 references live in `docs/reference/`. Design rationale and open questions are
-kept in `planning/design.md`.
-
-There is currently no dedicated `tests/` directory; demos and successful builds
-are the main regression checks.
+kept in `planning/design.md`. In-process regression tests live in `tests/` and
+exercise the public Edda API without starting a server.
 
 ## Build, Test, and Development Commands
 
@@ -20,6 +18,8 @@ are the main regression checks.
   changing `.saga` files.
 - `saga build`: compile the library, docs examples, and demo binary. Run this
   before submitting changes.
+- `saga test`: run the `Std.Test` suite in `tests/`. Use this for router,
+  request parser, and response helper regressions.
 - `saga run`: run `src/Main.saga`, which starts the demo server defined in
   `project.toml`.
 - `nix develop`: enter the project development shell when working on systems
@@ -38,10 +38,10 @@ abstractions. Keep library code in `lib/` and examples in `src/Demo/`.
 
 ## Testing Guidelines
 
-Run `saga build` after every code change. When adding behavior, prefer a focused
-demo route or small example module until a formal test harness exists. Name demo
-modules by topic, for example `Demo.JsonApi` or `Demo.ErrorMiddleware`, and make
-the route paths easy to exercise manually.
+Run `saga test` after library changes and `saga build` before handing work back.
+Prefer in-process tests in `tests/` for pure routing and request/response
+helpers. Add demo routes in `src/Demo/` when behavior needs browser/manual
+exercise, for example file uploads, sessions, or static assets.
 
 ## Agent-Specific Instructions
 

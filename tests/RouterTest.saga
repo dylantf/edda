@@ -1,0 +1,102 @@
+module RouterTest
+
+import Std.Test (Testing, describe, test, assert_eq, assert_true)
+import Edda (
+  Request,
+  Method,
+  GET,
+  POST,
+  choose,
+  group,
+  route,
+  param
+)
+import SagaHttp.Http as Http (Response)
+
+fun req : Method -> String -> Request
+req method path = Request {
+  method: method,
+  path: path,
+  original_path: path,
+  query: Nothing,
+  matches: [],
+  params: [],
+  headers: [],
+  body: Nothing,
+}
+
+fun body_text : Response -> String
+body_text resp = case resp.body {
+  Http.Buffered text -> text
+  _ -> "<<non-text response>>"
+}
+
+fun require_param : String -> Request -> String
+require_param name request = case param name request {
+  Just value -> value
+  Nothing -> "<<missing>>"
+}
+
+pub fun tests : Unit -> Unit needs {Testing}
+tests () = {
+  describe "Router" (fun () -> {
+    test "routes by method and path parameters" (fun () -> {
+      let app = choose [
+        route GET "/users/:id" (fun request -> {
+          Http.text 200 (require_param "id" request)
+        }),
+      ]
+      let resp = app (req GET "/users/42")
+      assert_eq resp.status 200
+      assert_eq (body_text resp) "42"
+    })
+
+    test "method mismatch falls through to 404" (fun () -> {
+      let app = choose [
+        route POST "/users/:id" (fun _ -> Http.text 200 "posted"),
+      ]
+      let resp = app (req GET "/users/42")
+      assert_eq resp.status 404
+      assert_eq (body_text resp) "not found"
+    })
+
+    test "group inner miss falls through to later outer routes" (fun () -> {
+      let app = choose [
+        group "/api" [
+          route GET "/users" (fun _ -> Http.text 200 "users"),
+        ],
+        route GET "/api/status" (fun _ -> Http.text 200 "status"),
+      ]
+      let resp = app (req GET "/api/status")
+      assert_eq resp.status 200
+      assert_eq (body_text resp) "status"
+    })
+
+    test "group accumulates params and match trace" (fun () -> {
+      let app = choose [
+        group "/users/:user_id" [
+          route GET "/posts/:post_id" (fun request -> {
+            assert_eq (require_param "user_id" request) "alice"
+            assert_eq (require_param "post_id" request) "first"
+            assert_eq (List.length request.matches) 2
+            case request.matches {
+              [outer, inner] -> {
+                assert_eq outer.pattern "/users/:user_id"
+                assert_eq outer.path "/users/alice"
+                assert_eq outer.params [("user_id", "alice")]
+                assert_eq inner.pattern "/posts/:post_id"
+                assert_eq inner.path "/posts/first"
+                assert_eq inner.params [("post_id", "first")]
+              }
+              _ -> assert_true False
+            }
+            Http.text 200 "ok"
+          }),
+        ],
+      ]
+      let resp = app (req GET "/users/alice/posts/first")
+      assert_eq resp.status 200
+      assert_eq (body_text resp) "ok"
+    })
+  })
+}

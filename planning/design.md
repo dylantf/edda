@@ -676,6 +676,23 @@ Helpers for `Accept`, `Accept-Encoding`, and variant selection are useful but
 not v1. Start with explicit response helpers and request body decoders; add
 negotiation once real apps show repeated patterns.
 
+### Test harness
+
+Edda now has a first `Std.Test` harness under `tests/`. These are in-process
+tests that construct `Request` records and call the public Edda API directly,
+so they cover router semantics and request parsers without spinning up
+`saga_http`.
+
+Current coverage:
+
+- `RouterTest`: method/path matching, path params, group fallthrough, and
+  accumulated `matches`.
+- `RequestTest`: query/form decoding, cookies, filename sanitizing, quoted
+  multipart parameters, file parts, and multipart size limits.
+
+Use `saga test` for fast regressions and keep browser/demo checks for behavior
+that genuinely needs a running server.
+
 ## Notes on the compiler interaction
 
 Several rounds of Saga compiler work happened while building this

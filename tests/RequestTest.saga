@@ -1,0 +1,155 @@
+module RequestTest
+
+import Std.BitString
+import Std.Test (Testing, describe, test, assert_eq)
+import Edda (
+  Request,
+  Method,
+  POST,
+  MultipartFileTooLarge,
+  MultipartText,
+  default_multipart_options,
+  form_entries,
+  form_values,
+  form_get,
+  form_get_all,
+  query_values,
+  cookies,
+  cookie,
+  multipart_values,
+  multipart_values_with,
+  multipart_get,
+  multipart_file,
+  sanitize_filename
+)
+
+fun req : Method -> String -> Request
+req method path = Request {
+  method: method,
+  path: path,
+  original_path: path,
+  query: Nothing,
+  matches: [],
+  params: [],
+  headers: [],
+  body: Nothing,
+}
+
+fun with_query : String -> Request -> Request
+with_query value request = { request | query: Just value }
+
+fun with_header : String -> String -> Request -> Request
+with_header name value request =
+  { request | headers: request.headers <> [(name, value)] }
+
+fun with_body : String -> Request -> Request
+with_body value request =
+  { request | body: Just (BitString.from_string value) }
+
+fun multipart_req : String -> Request
+multipart_req body =
+  req POST "/upload"
+    |> with_header "Content-Type" "multipart/form-data; boundary=\"abc\""
+    |> with_body body
+
+fun multipart_body : String
+multipart_body = "--abc\r\n"
+  <> "Content-Disposition: form-data; name=\"caption\"\r\n"
+  <> "\r\n"
+  <> "hello\r\n"
+  <> "--abc\r\n"
+  <> "Content-Disposition: form-data; name=\"upload\"; filename=\"semi; quote\\\" slash\\\\.txt\"\r\n"
+  <> "Content-Type: text/plain\r\n"
+  <> "\r\n"
+  <> "bytes\r\n"
+  <> "--abc--"
+
+pub fun tests : Unit -> Unit needs {Testing}
+tests () = {
+  describe "Request helpers" (fun () -> {
+    test "query_values decodes urlencoded values and preserves duplicates" (fun () -> {
+      let result = query_values (req POST "/search" |> with_query "q=hello+world&tag=a&tag=b%21")
+      case result {
+        Ok values -> {
+          assert_eq (form_entries values) [
+            ("q", "hello world"),
+            ("tag", "a"),
+            ("tag", "b!"),
+          ]
+          assert_eq (form_get "q" values) (Just "hello world")
+          assert_eq (form_get_all "tag" values) ["a", "b!"]
+        }
+        Err _ -> assert_eq True False
+      }
+    })
+
+    test "form_values decodes application/x-www-form-urlencoded bodies" (fun () -> {
+      let request =
+        req POST "/form"
+          |> with_header "Content-Type" "application/x-www-form-urlencoded; charset=utf-8"
+          |> with_body "name=Alice+Smith&tags=demo&tags=forms"
+      case form_values request {
+        Ok values -> {
+          assert_eq (form_get "name" values) (Just "Alice Smith")
+          assert_eq (form_get_all "tags" values) ["demo", "forms"]
+        }
+        Err _ -> assert_eq True False
+      }
+    })
+
+    test "cookies parses duplicate headers and percent escapes" (fun () -> {
+      let request =
+        req POST "/session"
+          |> with_header "Cookie" "session=abc%20123; theme=light"
+          |> with_header "Cookie" "theme=dark"
+      assert_eq (cookies request) [
+        ("session", "abc 123"),
+        ("theme", "light"),
+        ("theme", "dark"),
+      ]
+      assert_eq (cookie "session" request) (Just "abc 123")
+    })
+
+    test "sanitize_filename preserves spaces but rejects path-like names" (fun () -> {
+      assert_eq (sanitize_filename "Alice notes.txt") (Just "Alice notes.txt")
+      assert_eq (sanitize_filename "") Nothing
+      assert_eq (sanitize_filename ".") Nothing
+      assert_eq (sanitize_filename "..") Nothing
+      assert_eq (sanitize_filename "../secret.txt") Nothing
+      assert_eq (sanitize_filename "dir\\secret.txt") Nothing
+    })
+
+    test "multipart_values parses quoted parameters and file parts" (fun () -> {
+      case multipart_values (multipart_req multipart_body) {
+        Ok values -> {
+          case multipart_get "caption" values {
+            Just (MultipartText value) -> assert_eq value "hello"
+            _ -> assert_eq True False
+          }
+          case multipart_file "upload" values {
+            Just file -> {
+              assert_eq file.filename "semi; quote\" slash\\.txt"
+              assert_eq file.content_type (Just "text/plain")
+              assert_eq (BitString.to_string file.body) (Ok "bytes")
+            }
+            Nothing -> assert_eq True False
+          }
+        }
+        Err _ -> assert_eq True False
+      }
+    })
+
+    test "multipart_values_with enforces file byte limits" (fun () -> {
+      let options = { default_multipart_options | max_file_bytes: Just 3 }
+      let result = multipart_values_with options (multipart_req multipart_body)
+      case result {
+        Err (MultipartFileTooLarge name limit actual) -> {
+          assert_eq name "upload"
+          assert_eq limit 3
+          assert_eq actual 5
+        }
+        _ -> assert_eq True False
+      }
+    })
+  })
+}
