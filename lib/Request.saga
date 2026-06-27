@@ -193,9 +193,29 @@ pub record MultipartFormValues {
   entries: List (String, MultipartValue),
 }
 
+#@ Size policy for buffered multipart parsing.
+#@ `Nothing` means no Edda-level limit for that dimension.
+pub record MultipartOptions {
+  max_total_bytes: Maybe Int,
+  max_part_count: Maybe Int,
+  max_part_bytes: Maybe Int,
+  max_text_bytes: Maybe Int,
+  max_file_bytes: Maybe Int,
+}
+
 #@ Empty multipart form values.
 pub fun empty_multipart_form_values : MultipartFormValues
 empty_multipart_form_values = MultipartFormValues { entries: [] }
+
+#@ Default multipart parsing policy: no Edda-level size limits.
+pub fun default_multipart_options : MultipartOptions
+default_multipart_options = MultipartOptions {
+  max_total_bytes: Nothing,
+  max_part_count: Nothing,
+  max_part_bytes: Nothing,
+  max_text_bytes: Nothing,
+  max_file_bytes: Nothing,
+}
 
 #@ Build multipart form values from ordered entries.
 pub fun multipart_form_values_from_entries : List (String, MultipartValue)
@@ -237,6 +257,17 @@ multipart_file name values = case multipart_get name values {
   _ -> Nothing
 }
 
+#@ Return a client filename when it is safe to treat as a basename.
+#@
+#@ Preserves ordinary filename characters, including whitespace, but rejects
+#@ empty names, `.`/`..`, path separators, and ASCII control bytes.
+pub fun sanitize_filename : String -> Maybe String
+sanitize_filename filename =
+  if filename == "" || filename == "." || filename == ".." then Nothing
+  else if String.contains "/" filename || String.contains "\\" filename then Nothing
+  else if List.any filename_byte_unsafe (BitString.to_list (BitString.from_string filename)) then Nothing
+  else Just filename
+
 #@ Errors from URL-encoded query/form decoding.
 pub type UrlEncodedError =
   | InvalidPercentEscape String
@@ -260,6 +291,11 @@ pub type MultipartError =
   | MultipartMissingBoundary
   | MultipartInvalidBoundary String
   | MultipartMalformed String
+  | MultipartTotalTooLarge Int Int
+  | MultipartPartCountTooLarge Int Int
+  | MultipartPartTooLarge Int Int
+  | MultipartTextTooLarge String Int Int
+  | MultipartFileTooLarge String Int Int
   | MultipartPartHeadersNotUtf8
   | MultipartMissingName
   | MultipartTextNotUtf8 String
@@ -303,7 +339,14 @@ form_value name req = case form_values req {
 
 #@ Decode a buffered `multipart/form-data` request body.
 pub fun multipart_values : Request -> Result MultipartFormValues MultipartError
-multipart_values req = case header "content-type" req {
+multipart_values req = multipart_values_with default_multipart_options req
+
+#@ Decode a buffered `multipart/form-data` request body with explicit size
+#@ limits.
+pub fun multipart_values_with : MultipartOptions
+  -> Request
+  -> Result MultipartFormValues MultipartError
+multipart_values_with options req = case header "content-type" req {
   Nothing -> Err MultipartMissingContentType
   Just actual ->
     if media_type_matches "multipart/form-data" actual then {
@@ -312,7 +355,10 @@ multipart_values req = case header "content-type" req {
         Just boundary ->
           if valid_multipart_boundary boundary then {
             case req.body {
-              Just body -> parse_multipart_body boundary body
+              Just body -> case check_limit options.max_total_bytes (BitString.size body) {
+                Ok _ -> parse_multipart_body options boundary body
+                Err (limit, actual) -> Err (MultipartTotalTooLarge limit actual)
+              }
               Nothing -> Err MultipartMissingBody
             }
           }
@@ -408,21 +454,24 @@ valid_multipart_boundary boundary = boundary != ""
   && not (String.contains "\r" boundary)
   && not (String.contains "\n" boundary)
 
-fun parse_multipart_body : String
+fun parse_multipart_body : MultipartOptions
+  -> String
   -> BitString
   -> Result MultipartFormValues MultipartError
-parse_multipart_body boundary body = {
+parse_multipart_body options boundary body = {
   let start = BitString.to_list (BitString.from_string ("--" <> boundary))
   let bytes = BitString.to_list body
-  if list_starts_with start bytes then parse_multipart_parts boundary (List.drop (List.length start) bytes) []
+  if list_starts_with start bytes then parse_multipart_parts options boundary (List.drop (List.length start) bytes) [] 0
   else Err (MultipartMalformed "missing opening boundary")
 }
 
-fun parse_multipart_parts : String
+fun parse_multipart_parts : MultipartOptions
+  -> String
   -> List Int
   -> List (String, MultipartValue)
+  -> Int
   -> Result MultipartFormValues MultipartError
-parse_multipart_parts boundary bytes acc =
+parse_multipart_parts options boundary bytes acc count =
   if list_starts_with [
     45,
     45,
@@ -430,38 +479,51 @@ parse_multipart_parts boundary bytes acc =
   else if list_starts_with [13, 10] bytes then {
     let delimiter =
       BitString.to_list (BitString.from_string ("\r\n--" <> boundary))
-    case split_bytes delimiter (List.drop 2 bytes) {
-      Just (part_bytes, rest) -> case parse_multipart_part part_bytes {
-        Ok entry -> parse_multipart_parts boundary rest (entry :: acc)
-        Err e -> Err e
+    case check_limit options.max_part_count (count + 1) {
+      Ok _ -> case split_bytes delimiter (List.drop 2 bytes) {
+        Just (part_bytes, rest) -> case check_limit options.max_part_bytes (List.length part_bytes) {
+          Ok _ -> case parse_multipart_part options part_bytes {
+            Ok entry -> parse_multipart_parts options boundary rest (entry :: acc) (count + 1)
+            Err e -> Err e
+          }
+          Err (limit, actual) -> Err (MultipartPartTooLarge limit actual)
+        }
+        Nothing -> Err (MultipartMalformed "missing closing boundary")
       }
-      Nothing -> Err (MultipartMalformed "missing closing boundary")
+      Err (limit, actual) -> Err (MultipartPartCountTooLarge limit actual)
     }
   }
   else Err (MultipartMalformed "expected part boundary")
 
-fun parse_multipart_part : List Int
+fun parse_multipart_part : MultipartOptions
+  -> List Int
   -> Result (String, MultipartValue) MultipartError
-parse_multipart_part bytes = case split_bytes [13, 10, 13, 10] bytes {
+parse_multipart_part options bytes = case split_bytes [13, 10, 13, 10] bytes {
   Just (header_bytes, body_bytes) -> case BitString.to_string (BitString.from_list header_bytes) {
     Ok header_text -> {
       let headers = parse_part_headers header_text
       case header_value "content-disposition" headers {
         Just disposition -> case header_param "name" disposition {
           Just name -> case header_param "filename" disposition {
-            Just filename ->
-              Ok (
-                name,
-                MultipartFileValue (MultipartFile {
-                  filename: filename,
-                  content_type: header_value "content-type" headers,
-                  headers: headers,
-                  body: BitString.from_list body_bytes,
-                }),
-              )
-            Nothing -> case BitString.to_string (BitString.from_list body_bytes) {
-              Ok value -> Ok (name, MultipartText value)
-              Err _ -> Err (MultipartTextNotUtf8 name)
+            Just filename -> case check_limit options.max_file_bytes (List.length body_bytes) {
+              Ok _ ->
+                Ok (
+                  name,
+                  MultipartFileValue (MultipartFile {
+                    filename: filename,
+                    content_type: header_value "content-type" headers,
+                    headers: headers,
+                    body: BitString.from_list body_bytes,
+                  }),
+                )
+              Err (limit, actual) -> Err (MultipartFileTooLarge name limit actual)
+            }
+            Nothing -> case check_limit options.max_text_bytes (List.length body_bytes) {
+              Ok _ -> case BitString.to_string (BitString.from_list body_bytes) {
+                Ok value -> Ok (name, MultipartText value)
+                Err _ -> Err (MultipartTextNotUtf8 name)
+              }
+              Err (limit, actual) -> Err (MultipartTextTooLarge name limit actual)
             }
           }
           Nothing -> Err MultipartMissingName
@@ -473,6 +535,17 @@ parse_multipart_part bytes = case split_bytes [13, 10, 13, 10] bytes {
   }
   Nothing -> Err (MultipartMalformed "missing part header separator")
 }
+
+fun check_limit : Maybe Int -> Int -> Result Unit (Int, Int)
+check_limit maybe_limit actual = case maybe_limit {
+  Just limit ->
+    if actual > limit then Err (limit, actual)
+    else Ok ()
+  Nothing -> Ok ()
+}
+
+fun filename_byte_unsafe : Int -> Bool
+filename_byte_unsafe byte = byte < 32 || byte == 127
 
 fun parse_part_headers : String -> List (String, String)
 parse_part_headers text =
@@ -497,7 +570,7 @@ header_value name headers = case List.find (fun (k, _) -> k
 
 fun header_param : String -> String -> Maybe String
 header_param name value = {
-  let parts = String.split ";" value
+  let parts = split_header_params value
   case List.find (fun (k, _) -> k
     == String.to_lower name) (List.filter_map parse_header_param parts) {
     Just (_, v) -> Just v
@@ -510,15 +583,54 @@ parse_header_param part = {
   let (raw_name, raw_value) = split_first_equals part
   let name = String.to_lower (String.trim raw_name)
   if name == "" || raw_value == "" then Nothing
-  else Just (name, strip_quotes (String.trim raw_value))
+  else Just (name, decode_header_param_value (String.trim raw_value))
 }
 
-fun strip_quotes : String -> String
-strip_quotes value =
+fun split_header_params : String -> List String
+split_header_params value =
+  List.map bytes_to_string (split_header_param_bytes (BitString.to_list (BitString.from_string value)) [] [] False False)
+
+fun split_header_param_bytes : List Int
+  -> List Int
+  -> List (List Int)
+  -> Bool
+  -> Bool
+  -> List (List Int)
+split_header_param_bytes bytes current acc in_quotes escaped = case bytes {
+  [] -> List.reverse (List.reverse current :: acc)
+  59 :: rest ->
+    if in_quotes then split_header_param_bytes rest (59 :: current) acc in_quotes False
+    else split_header_param_bytes rest [] (List.reverse current :: acc) False False
+  34 :: rest ->
+    if escaped then split_header_param_bytes rest (34 :: current) acc in_quotes False
+    else split_header_param_bytes rest (34 :: current) acc (not in_quotes) False
+  92 :: rest ->
+    if in_quotes && not escaped then split_header_param_bytes rest (92 :: current) acc in_quotes True
+    else split_header_param_bytes rest (92 :: current) acc in_quotes False
+  b :: rest -> split_header_param_bytes rest (b :: current) acc in_quotes False
+}
+
+fun decode_header_param_value : String -> String
+decode_header_param_value value =
   if String.starts_with "\"" value && String.ends_with "\"" value then {
-    String.slice 1 (String.length value - 2) value
+    unescape_quoted_header_value (String.slice 1 (String.length value - 2) value)
   }
   else value
+
+fun unescape_quoted_header_value : String -> String
+unescape_quoted_header_value value =
+  bytes_to_string (List.reverse (unescape_quoted_header_bytes (BitString.to_list (BitString.from_string value)) []))
+
+fun unescape_quoted_header_bytes : List Int -> List Int -> List Int
+unescape_quoted_header_bytes bytes acc = case bytes {
+  [] -> acc
+  92 :: b :: rest -> unescape_quoted_header_bytes rest (b :: acc)
+  92 :: [] -> unescape_quoted_header_bytes [] (92 :: acc)
+  b :: rest -> unescape_quoted_header_bytes rest (b :: acc)
+}
+
+fun bytes_to_string : List Int -> String
+bytes_to_string bytes = BitString.to_string_unchecked (BitString.from_list bytes)
 
 fun split_bytes : List Int -> List Int -> Maybe (List Int, List Int)
 split_bytes needle haystack = split_bytes_loop needle haystack []

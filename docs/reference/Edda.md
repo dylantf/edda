@@ -147,6 +147,21 @@ record MultipartFormValues {
 
 Decoded multipart form values. Preserves insertion order and duplicates.
 
+### MultipartOptions
+
+```saga
+record MultipartOptions {
+  max_total_bytes: Maybe Int,
+  max_part_count: Maybe Int,
+  max_part_bytes: Maybe Int,
+  max_text_bytes: Maybe Int,
+  max_file_bytes: Maybe Int
+}
+```
+
+Size policy for buffered multipart parsing. `Nothing` means no Edda-level limit
+for that dimension.
+
 ### UrlEncodedError
 
 ```saga
@@ -180,6 +195,11 @@ type MultipartError =
   | MultipartMissingBoundary
   | MultipartInvalidBoundary String
   | MultipartMalformed String
+  | MultipartTotalTooLarge Int Int
+  | MultipartPartCountTooLarge Int Int
+  | MultipartPartTooLarge Int Int
+  | MultipartTextTooLarge String Int Int
+  | MultipartFileTooLarge String Int Int
   | MultipartPartHeadersNotUtf8
   | MultipartMissingName
   | MultipartTextNotUtf8 String
@@ -280,6 +300,14 @@ fun empty_multipart_form_values : MultipartFormValues
 ```
 
 Empty multipart form values.
+
+### default_multipart_options
+
+```saga
+fun default_multipart_options : MultipartOptions
+```
+
+Default multipart parsing policy: no Edda-level size limits.
 
 ## Functions
 
@@ -458,6 +486,14 @@ fun multipart_values : Request -> Result MultipartFormValues MultipartError
 
 Decode a buffered `multipart/form-data` request body.
 
+### multipart_values_with
+
+```saga
+fun multipart_values_with : MultipartOptions -> Request -> Result MultipartFormValues MultipartError
+```
+
+Decode a buffered `multipart/form-data` request body with explicit size limits.
+
 ### multipart_value
 
 ```saga
@@ -505,6 +541,16 @@ fun multipart_file : String -> MultipartFormValues -> Maybe MultipartFile
 ```
 
 Return the first file multipart value for `name`.
+
+### sanitize_filename
+
+```saga
+fun sanitize_filename : String -> Maybe String
+```
+
+Return a client filename when it is safe to treat as a basename. Preserves
+ordinary filename characters, including whitespace, but rejects empty names,
+`.`/`..`, path separators, and ASCII control bytes.
 
 ### body_bytes
 

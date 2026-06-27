@@ -531,15 +531,22 @@ Core request body helpers now available:
 - `form_value : String -> Request -> Result (Maybe String) FormError`.
 - `multipart_values : Request -> Result MultipartFormValues MultipartError`
   for buffered `multipart/form-data` bodies.
+- `multipart_values_with : MultipartOptions -> Request -> Result MultipartFormValues MultipartError`
+  for explicit max total bytes, part count, part bytes, text bytes, and file
+  bytes. `default_multipart_options` leaves all dimensions unlimited.
 - `multipart_value`, `multipart_text`, and `multipart_file` helpers for pulling
   individual values out of `MultipartFormValues`.
+- `sanitize_filename : String -> Maybe String` validates client-provided
+  filenames as safe basenames without rewriting ordinary characters such as
+  spaces.
 - Cookie request helpers live in core now as parsers, not stored `Request`
   fields: `cookies : Request -> List (String, String)` and
   `cookie : String -> Request -> Maybe String`.
 
 Still worth adding:
 
-- Multipart size limits and richer upload policy.
+- Richer upload policy for filenames, header parameter edge cases, and large
+  streaming uploads.
 
 These should compose with the existing effect patterns: apps that want shared
 decode policy can lift these primitives into route-specific effects at the
@@ -634,9 +641,34 @@ values can be `MultipartText` or `MultipartFileValue`. It parses the existing
 buffered request body, preserves duplicate field names, preserves per-part
 headers, and keeps file bodies as `BitString`.
 
-Still deferred: nested size limits, streaming/backpressure, temporary storage,
-cleanup semantics, and APIs for large uploads. Those probably need streaming
-request body support in `saga_http` before they are pleasant.
+Smoke-tested from the demo form on June 27, 2026:
+
+```text
+caption = a tiny upload
+filename = blog-kitten-nursery-operation-kindness.jpg
+content_type = image/jpeg
+bytes = 52285
+```
+
+Multipart size limits are now implemented through `MultipartOptions` and
+`multipart_values_with`. Defaults are unlimited for compatibility; apps can cap
+total bytes, part count, part bytes, text bytes, and file bytes.
+
+`sanitize_filename` is available for upload hygiene. It preserves ordinary
+filename characters, including whitespace, but rejects empty names, `.`/`..`,
+path separators, and ASCII control bytes. Apps should still choose their own
+storage paths and not trust `MultipartFile.filename` as a path.
+
+Header parameter parsing now handles quoted values, semicolons inside quoted
+values, and escaped quoted-pair bytes such as `\"` and `\\`. This is shared by
+`Content-Type` boundary parsing and multipart `Content-Disposition` fields.
+
+Remaining multipart polish:
+
+- Header parameter parsing: support `filename*=` extended encoding.
+- Streaming/temp-file story: large uploads need streaming/backpressure,
+  temporary storage, and cleanup semantics. Those probably need streaming
+  request body support in `saga_http` before they are pleasant.
 
 ### Content negotiation
 

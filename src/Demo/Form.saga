@@ -1,10 +1,9 @@
+#@ End-to-end form demo. GET renders a basic urlencoded form; POST decodes the
+#@ submitted FormValues, prints them to stdout, and renders them back.
 module Demo.Form
 
-# End-to-end form demo. GET renders a basic urlencoded form; POST decodes the
-# submitted FormValues, prints them to stdout, and renders them back.
-
-import Std.IO (console, println)
 import Std.BitString
+import Std.IO (console, println)
 import Std.List
 import Std.String
 import Edda (
@@ -19,6 +18,7 @@ import Edda (
   multipart_values,
   multipart_text,
   multipart_file,
+  sanitize_filename,
   FormValues,
   FormError,
   MultipartError
@@ -159,9 +159,15 @@ multipart_page _ =
     </html>
     """
 
-fun render_upload_result : String -> String -> String -> String
-render_upload_result caption filename content_type =
-  "caption = " <> caption <> "\nfilename = " <> filename <> "\ncontent_type = " <> content_type
+fun render_upload_result : String -> String -> String -> String -> String
+render_upload_result caption filename safe_filename content_type = "caption = "
+  <> caption
+  <> "\nfilename = "
+  <> filename
+  <> "\nsafe_filename = "
+  <> safe_filename
+  <> "\ncontent_type = "
+  <> content_type
 
 fun submit_multipart : Request -> Response needs {Stdio}
 submit_multipart req = case multipart_values req {
@@ -176,7 +182,11 @@ submit_multipart req = case multipart_values req {
           Just value -> value
           Nothing -> "(none)"
         }
-        render_upload_result caption file.filename content_type
+        let safe_name = case sanitize_filename file.filename {
+          Just value -> value
+          Nothing -> "(unsafe)"
+        }
+        render_upload_result caption file.filename safe_name content_type
           <> "\nbytes = "
           <> show (BitString.size file.body)
       }
@@ -219,10 +229,12 @@ submit_multipart req = case multipart_values req {
 }
 
 pub fun app : Request -> Response
-app req =
-  choose [
+app req = {
+  req
+  |> choose [
     route GET "/" form_page,
     route POST "/" submit_form,
     route GET "/multipart" multipart_page,
     route POST "/multipart" submit_multipart,
-  ] req with console
+  ]
+} with console
