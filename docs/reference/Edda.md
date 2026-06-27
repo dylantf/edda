@@ -100,8 +100,7 @@ fun group : String -> List (Request -> Response needs {Skip, ..e}) -> Request ->
 Match a path prefix and run the inner routes against the remainder.
 Captured `:name` params accumulate and are visible to sub-routes.
 
-Once the prefix matches, the inner `choose` owns the request. If no inner route
-matches, the result is that inner `choose`'s `not_found`.
+If no inner route matches, the group skips so the outer `choose` can continue.
 
 ### mount
 

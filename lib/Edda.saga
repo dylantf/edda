@@ -141,6 +141,18 @@ choose routes req = case routes {
   }
 }
 
+# Like `choose`, but preserves `Skip` when nothing matches. Used by `group` so
+# a prefix match only rewrites the request for inner routes; it does not claim
+# the whole prefix by turning inner misses into 404s.
+fun choose_or_skip : List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+  needs {Skip, ..e}
+choose_or_skip routes req = case routes {
+  [] -> skip! ()
+  r :: rest -> r req with {
+    skip () = choose_or_skip rest req
+  }
+}
+
 # ---------------------------------------------------------------------------
 # group — inline sub-routes sharing the parent's effect row.
 # ---------------------------------------------------------------------------
@@ -151,10 +163,7 @@ pub fun group : String -> List (Request -> Response needs {Skip, ..e}) -> Reques
   needs {Skip, ..e}
 group prefix routes req = case match_prefix (path_segments prefix) (path_segments req.path) req.params {
   Just (new_params, remaining) ->
-    choose routes ({ req |
-      params: new_params,
-      path: segments_to_path remaining,
-    })
+    choose_or_skip routes ({ req | params: new_params, path: segments_to_path remaining })
   Nothing -> skip! ()
 }
 

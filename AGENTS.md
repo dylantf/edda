@@ -16,7 +16,7 @@ are the main regression checks.
 
 ## Build, Test, and Development Commands
 
-- `saga fmt`: format Saga source files. Run this before `saga build` when
+- `saga fmt <filename>`: format Saga source file. Run this before `saga build` when
   changing `.saga` files.
 - `saga build`: compile the library, docs examples, and demo binary. Run this
   before submitting changes.

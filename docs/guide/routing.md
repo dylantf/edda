@@ -98,6 +98,11 @@ choose [
 ]
 ```
 
+If the prefix matches but none of the inner routes match, `group` skips and the
+outer `choose` keeps trying later routes. In other words, `group` is prefix
+composition; it does not claim the whole prefix unless you add an explicit
+catch-all inside it.
+
 Captured params accumulate across nesting, so:
 
 ```saga
@@ -107,10 +112,6 @@ group "/users/:id" [
 ```
 
 works as expected.
-
-Once a `group` prefix matches, unmatched inner routes return that inner
-`choose`'s 404 rather than falling through to later outer routes. Use a
-catch-all inside the group when you want a custom 404 for that prefix.
 
 ## `mount`: attach a sub-app
 
@@ -129,10 +130,14 @@ A mounted sub-app sees the path with the prefix stripped. Inside
 "/users"`. The unmodified path stays available as `req.original_path`
 for things like logging.
 
+Unlike `group`, a mounted app is already a complete `Request -> Response`
+application. If it matches the prefix, its own routing and 404 behavior own the
+request.
+
 ### When to use which
 
 - **`group`** when sub-routes need the parent's effects and should
-  stay in the same file.
+  stay in the same file. Inner misses fall through to later outer routes.
 - **`mount`** when a sub-app is its own thing — different effect
   stack, its own module, its own tests. Real-world example: a public
   API and an admin API that need different DB pools.

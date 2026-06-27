@@ -132,6 +132,10 @@ let app = choose [
 ]
 ```
 
+If the prefix matches but no sub-route matches, `group` skips so the
+outer `choose` can keep trying later routes. It is prefix composition,
+not namespace ownership.
+
 **`mount`** — attach a fully-discharged sub-app at a prefix. Useful when
 a sub-app uses a different handler stack (admin DB pool, mock auth in
 tests) or is its own module.
