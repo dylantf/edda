@@ -15,7 +15,6 @@ import Edda.Request (
   PATCH,
   OPTIONS,
   HEAD,
-  method_str,
   header
 )
 import SagaHttp.Http as Http (Response, ResponseBody, text)
@@ -337,7 +336,7 @@ cors_origin_value config req = case header "origin" req {
 }
 
 fun cors_methods_header : CorsConfig -> String
-cors_methods_header config = String.join ", " (List.map method_str config.allow_methods)
+cors_methods_header config = String.join ", " (List.map show config.allow_methods)
 
 fun add_cors_allow_headers : CorsConfig -> Request -> Response -> Response
 add_cors_allow_headers config req resp = {

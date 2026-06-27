@@ -172,6 +172,8 @@ The demo server listens on `http://localhost:8080`.
 
 - `/form` renders and submits an `application/x-www-form-urlencoded` form. The
   POST route decodes a `FormValues` value and preserves duplicate field names.
+- `/form/multipart` renders and submits a buffered multipart form with text and
+  file values.
 - `/session` demonstrates a tiny cookie-backed login/logout flow.
 - `/session/secret` is a protected route that redirects back to `/session`
   unless the demo session cookie is present.

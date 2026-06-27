@@ -110,8 +110,9 @@ case query_values req {
 ```
 
 `query_values` returns `FormValues`, the same text-only value container used by
-`application/x-www-form-urlencoded` bodies. Multipart forms are a future
-separate type because they can contain files and per-part headers.
+`application/x-www-form-urlencoded` bodies. `multipart_values` returns
+`MultipartFormValues`, whose values can be text or buffered files with per-part
+headers.
 
 ## `group`: inline nesting
 
@@ -199,7 +200,7 @@ a catch-all at the bottom:
 choose [
   route GET "/health", health,
   ...
-  fun req -> text 404 $"no route for {method_str req.method} {req.original_path}",
+  fun req -> text 404 $"no route for {show req.method} {req.original_path}",
 ]
 ```
 

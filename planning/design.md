@@ -529,14 +529,17 @@ Core request body helpers now available:
 - `form_values : Request -> Result FormValues FormError` for
   `application/x-www-form-urlencoded`.
 - `form_value : String -> Request -> Result (Maybe String) FormError`.
+- `multipart_values : Request -> Result MultipartFormValues MultipartError`
+  for buffered `multipart/form-data` bodies.
+- `multipart_value`, `multipart_text`, and `multipart_file` helpers for pulling
+  individual values out of `MultipartFormValues`.
 - Cookie request helpers live in core now as parsers, not stored `Request`
   fields: `cookies : Request -> List (String, String)` and
   `cookie : String -> Request -> Maybe String`.
 
 Still worth adding:
 
-- Multipart form parsing as a separate `MultipartFormValues` type whose values
-  can be text or files.
+- Multipart size limits and richer upload policy.
 
 These should compose with the existing effect patterns: apps that want shared
 decode policy can lift these primitives into route-specific effects at the
@@ -626,10 +629,14 @@ writes.
 
 ### Multipart forms and uploads
 
-Multipart is intentionally deferred. It brings boundary parsing, file uploads,
-temporary storage, per-part headers, nested size limits, streaming/backpressure,
-and cleanup semantics. It probably wants a dedicated parser module and may need
-streaming request body support in `saga_http` before it is pleasant.
+Buffered multipart parsing is now in core through `MultipartFormValues`, whose
+values can be `MultipartText` or `MultipartFileValue`. It parses the existing
+buffered request body, preserves duplicate field names, preserves per-part
+headers, and keeps file bodies as `BitString`.
+
+Still deferred: nested size limits, streaming/backpressure, temporary storage,
+cleanup semantics, and APIs for large uploads. Those probably need streaming
+request body support in `saga_http` before they are pleasant.
 
 ### Content negotiation
 

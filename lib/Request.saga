@@ -1,5 +1,6 @@
 module Edda.Request
 
+import Std.Base (Show)
 import Std.BitString
 import Std.List
 import Std.String
@@ -21,15 +22,21 @@ pub type Method =
   | Custom String
   deriving (Eq)
 
+impl Show for Method {
+  show method = case method {
+    GET -> "GET"
+    POST -> "POST"
+    PUT -> "PUT"
+    DELETE -> "DELETE"
+    PATCH -> "PATCH"
+    OPTIONS -> "OPTIONS"
+    HEAD -> "HEAD"
+    Custom s -> s
+  }
+}
+
 pub fun method_str : Method -> String
-method_str GET = "GET"
-method_str POST = "POST"
-method_str PUT = "PUT"
-method_str DELETE = "DELETE"
-method_str PATCH = "PATCH"
-method_str OPTIONS = "OPTIONS"
-method_str HEAD = "HEAD"
-method_str (Custom s) = s
+method_str method = show method
 
 fun method_from_string : String -> Method
 method_from_string s = {
@@ -79,7 +86,8 @@ pub record Request {
 #@ Look up a captured path parameter by name.
 #@ If nested routes reuse a parameter name, the innermost capture wins.
 pub fun param : String -> Request -> Maybe String
-param name req = case List.find (fun (k, _) -> k == name) (List.reverse req.params) {
+param name req = case List.find (fun (k, _) -> k
+  == name) (List.reverse req.params) {
   Just (_, v) -> Just v
   Nothing -> Nothing
 }
@@ -103,7 +111,8 @@ query_params req = case req.query {
 
 #@ Look up the first query parameter value by name.
 pub fun query_param : String -> Request -> Maybe String
-query_param name req = case List.find (fun (k, _) -> k == name) (query_params req) {
+query_param name req = case List.find (fun (k, _) -> k
+  == name) (query_params req) {
   Just (_, v) -> Just v
   Nothing -> Nothing
 }
@@ -147,9 +156,10 @@ form_get name values = case List.find (fun (k, _) -> k == name) values.entries {
 
 #@ Return all values for `name`, preserving insertion order.
 pub fun form_get_all : String -> FormValues -> List String
-form_get_all name values = List.filter_map (fun (k, v) -> {
-  if k == name then Just v else Nothing
-}) values.entries
+form_get_all name values =
+  List.filter_map (fun (k, v) -> {
+    if k == name then Just v else Nothing
+  }) values.entries
 
 #@ Append a value for `name`.
 pub fun form_append : String -> String -> FormValues -> FormValues
@@ -158,13 +168,74 @@ form_append name value values =
 
 #@ Replace all existing values for `name` with one value appended at the end.
 pub fun form_set : String -> String -> FormValues -> FormValues
-form_set name value values =
-  form_append name value (form_delete name values)
+form_set name value values = form_append name value (form_delete name values)
 
 #@ Delete all values for `name`.
 pub fun form_delete : String -> FormValues -> FormValues
 form_delete name values =
   { values | entries: List.filter (fun (k, _) -> k != name) values.entries }
+
+#@ A buffered file part from a multipart form.
+pub record MultipartFile {
+  filename: String,
+  content_type: Maybe String,
+  headers: List (String, String),
+  body: BitString,
+}
+
+#@ A text or file value from a multipart form.
+pub type MultipartValue =
+  | MultipartText String
+  | MultipartFileValue MultipartFile
+
+#@ Decoded multipart form values. Preserves insertion order and duplicates.
+pub record MultipartFormValues {
+  entries: List (String, MultipartValue),
+}
+
+#@ Empty multipart form values.
+pub fun empty_multipart_form_values : MultipartFormValues
+empty_multipart_form_values = MultipartFormValues { entries: [] }
+
+#@ Build multipart form values from ordered entries.
+pub fun multipart_form_values_from_entries : List (String, MultipartValue)
+  -> MultipartFormValues
+multipart_form_values_from_entries entries = MultipartFormValues {
+  entries: entries,
+}
+
+#@ Return ordered multipart form entries.
+pub fun multipart_entries : MultipartFormValues -> List (String, MultipartValue)
+multipart_entries values = values.entries
+
+#@ Return the first multipart value for `name`.
+pub fun multipart_get : String -> MultipartFormValues -> Maybe MultipartValue
+multipart_get name values = case List.find (fun (k, _) -> k
+  == name) values.entries {
+  Just (_, v) -> Just v
+  Nothing -> Nothing
+}
+
+#@ Return all multipart values for `name`, preserving insertion order.
+pub fun multipart_get_all : String -> MultipartFormValues -> List MultipartValue
+multipart_get_all name values =
+  List.filter_map (fun (k, v) -> {
+    if k == name then Just v else Nothing
+  }) values.entries
+
+#@ Return the first text multipart value for `name`.
+pub fun multipart_text : String -> MultipartFormValues -> Maybe String
+multipart_text name values = case multipart_get name values {
+  Just (MultipartText value) -> Just value
+  _ -> Nothing
+}
+
+#@ Return the first file multipart value for `name`.
+pub fun multipart_file : String -> MultipartFormValues -> Maybe MultipartFile
+multipart_file name values = case multipart_get name values {
+  Just (MultipartFileValue value) -> Just value
+  _ -> Nothing
+}
 
 #@ Errors from URL-encoded query/form decoding.
 pub type UrlEncodedError =
@@ -179,6 +250,19 @@ pub type FormError =
   | FormMissingContentType
   | FormUnexpectedContentType String
   | FormUrlEncodedError UrlEncodedError
+  deriving (Debug, Eq)
+
+#@ Errors from `multipart/form-data` request parsing.
+pub type MultipartError =
+  | MultipartMissingBody
+  | MultipartMissingContentType
+  | MultipartUnexpectedContentType String
+  | MultipartMissingBoundary
+  | MultipartInvalidBoundary String
+  | MultipartMalformed String
+  | MultipartPartHeadersNotUtf8
+  | MultipartMissingName
+  | MultipartTextNotUtf8 String
   deriving (Debug, Eq)
 
 #@ Decode the request query string as URL-encoded form values.
@@ -214,6 +298,36 @@ form_values req = case require_content_type "application/x-www-form-urlencoded" 
 pub fun form_value : String -> Request -> Result (Maybe String) FormError
 form_value name req = case form_values req {
   Ok values -> Ok (form_get name values)
+  Err e -> Err e
+}
+
+#@ Decode a buffered `multipart/form-data` request body.
+pub fun multipart_values : Request -> Result MultipartFormValues MultipartError
+multipart_values req = case header "content-type" req {
+  Nothing -> Err MultipartMissingContentType
+  Just actual ->
+    if media_type_matches "multipart/form-data" actual then {
+      case multipart_boundary actual {
+        Nothing -> Err MultipartMissingBoundary
+        Just boundary ->
+          if valid_multipart_boundary boundary then {
+            case req.body {
+              Just body -> parse_multipart_body boundary body
+              Nothing -> Err MultipartMissingBody
+            }
+          }
+          else Err (MultipartInvalidBoundary boundary)
+      }
+    }
+    else Err (MultipartUnexpectedContentType actual)
+}
+
+#@ Decode and return the first multipart value for `name`.
+pub fun multipart_value : String
+  -> Request
+  -> Result (Maybe MultipartValue) MultipartError
+multipart_value name req = case multipart_values req {
+  Ok values -> Ok (multipart_get name values)
   Err e -> Err e
 }
 
@@ -286,6 +400,159 @@ target_query target = case target {
 pub fun to_handler : (Request -> Response) -> Http.Request -> Response
 to_handler app hr = app (from_http hr)
 
+fun multipart_boundary : String -> Maybe String
+multipart_boundary content_type = header_param "boundary" content_type
+
+fun valid_multipart_boundary : String -> Bool
+valid_multipart_boundary boundary = boundary != ""
+  && not (String.contains "\r" boundary)
+  && not (String.contains "\n" boundary)
+
+fun parse_multipart_body : String
+  -> BitString
+  -> Result MultipartFormValues MultipartError
+parse_multipart_body boundary body = {
+  let start = BitString.to_list (BitString.from_string ("--" <> boundary))
+  let bytes = BitString.to_list body
+  if list_starts_with start bytes then parse_multipart_parts boundary (List.drop (List.length start) bytes) []
+  else Err (MultipartMalformed "missing opening boundary")
+}
+
+fun parse_multipart_parts : String
+  -> List Int
+  -> List (String, MultipartValue)
+  -> Result MultipartFormValues MultipartError
+parse_multipart_parts boundary bytes acc =
+  if list_starts_with [
+    45,
+    45,
+  ] bytes then Ok (MultipartFormValues { entries: List.reverse acc })
+  else if list_starts_with [13, 10] bytes then {
+    let delimiter =
+      BitString.to_list (BitString.from_string ("\r\n--" <> boundary))
+    case split_bytes delimiter (List.drop 2 bytes) {
+      Just (part_bytes, rest) -> case parse_multipart_part part_bytes {
+        Ok entry -> parse_multipart_parts boundary rest (entry :: acc)
+        Err e -> Err e
+      }
+      Nothing -> Err (MultipartMalformed "missing closing boundary")
+    }
+  }
+  else Err (MultipartMalformed "expected part boundary")
+
+fun parse_multipart_part : List Int
+  -> Result (String, MultipartValue) MultipartError
+parse_multipart_part bytes = case split_bytes [13, 10, 13, 10] bytes {
+  Just (header_bytes, body_bytes) -> case BitString.to_string (BitString.from_list header_bytes) {
+    Ok header_text -> {
+      let headers = parse_part_headers header_text
+      case header_value "content-disposition" headers {
+        Just disposition -> case header_param "name" disposition {
+          Just name -> case header_param "filename" disposition {
+            Just filename ->
+              Ok (
+                name,
+                MultipartFileValue (MultipartFile {
+                  filename: filename,
+                  content_type: header_value "content-type" headers,
+                  headers: headers,
+                  body: BitString.from_list body_bytes,
+                }),
+              )
+            Nothing -> case BitString.to_string (BitString.from_list body_bytes) {
+              Ok value -> Ok (name, MultipartText value)
+              Err _ -> Err (MultipartTextNotUtf8 name)
+            }
+          }
+          Nothing -> Err MultipartMissingName
+        }
+        Nothing -> Err MultipartMissingName
+      }
+    }
+    Err _ -> Err MultipartPartHeadersNotUtf8
+  }
+  Nothing -> Err (MultipartMalformed "missing part header separator")
+}
+
+fun parse_part_headers : String -> List (String, String)
+parse_part_headers text =
+  List.filter_map parse_part_header (String.split "\r\n" text)
+
+fun parse_part_header : String -> Maybe (String, String)
+parse_part_header line =
+  if line == "" then Nothing
+  else {
+    let (name, value) = split_first_colon line
+    let key = String.to_lower (String.trim name)
+    if key == "" then Nothing
+    else Just (key, String.trim value)
+  }
+
+fun header_value : String -> List (String, String) -> Maybe String
+header_value name headers = case List.find (fun (k, _) -> k
+  == String.to_lower name) headers {
+  Just (_, v) -> Just v
+  Nothing -> Nothing
+}
+
+fun header_param : String -> String -> Maybe String
+header_param name value = {
+  let parts = String.split ";" value
+  case List.find (fun (k, _) -> k
+    == String.to_lower name) (List.filter_map parse_header_param parts) {
+    Just (_, v) -> Just v
+    Nothing -> Nothing
+  }
+}
+
+fun parse_header_param : String -> Maybe (String, String)
+parse_header_param part = {
+  let (raw_name, raw_value) = split_first_equals part
+  let name = String.to_lower (String.trim raw_name)
+  if name == "" || raw_value == "" then Nothing
+  else Just (name, strip_quotes (String.trim raw_value))
+}
+
+fun strip_quotes : String -> String
+strip_quotes value =
+  if String.starts_with "\"" value && String.ends_with "\"" value then {
+    String.slice 1 (String.length value - 2) value
+  }
+  else value
+
+fun split_bytes : List Int -> List Int -> Maybe (List Int, List Int)
+split_bytes needle haystack = split_bytes_loop needle haystack []
+
+fun split_bytes_loop : List Int
+  -> List Int
+  -> List Int
+  -> Maybe (List Int, List Int)
+split_bytes_loop needle haystack acc =
+  if list_starts_with needle haystack then Just (
+    List.reverse acc,
+    List.drop (List.length needle) haystack,
+  )
+  else case haystack {
+    [] -> Nothing
+    b :: rest -> split_bytes_loop needle rest (b :: acc)
+  }
+
+fun list_starts_with : List Int -> List Int -> Bool
+list_starts_with prefix bytes = case prefix {
+  [] -> True
+  p :: ps -> case bytes {
+    b :: rest -> p == b && list_starts_with ps rest
+    [] -> False
+  }
+}
+
+fun split_first_colon : String -> (String, String)
+split_first_colon s = case String.split ":" s {
+  [] -> ("", "")
+  [k] -> (k, "")
+  k :: rest -> (k, String.join ":" rest)
+}
+
 fun split_first_equals : String -> (String, String)
 split_first_equals s = case String.split "=" s {
   [] -> ("", "")
@@ -320,7 +587,8 @@ decode_urlencoded_pairs parts acc = case parts {
     else {
       let (raw_name, raw_value) = split_first_equals part
       case (url_decode_component raw_name, url_decode_component raw_value) {
-        (Ok name, Ok value) -> decode_urlencoded_pairs rest ((name, value) :: acc)
+        (Ok name, Ok value) ->
+          decode_urlencoded_pairs rest ((name, value) :: acc)
         (Err e, _) -> Err e
         (_, Err e) -> Err e
       }
@@ -328,14 +596,13 @@ decode_urlencoded_pairs parts acc = case parts {
 }
 
 fun url_decode_component : String -> Result String UrlEncodedError
-url_decode_component value =
-  case decode_percent_bytes True value (BitString.to_list (BitString.from_string value)) [] {
-    Ok bytes -> case BitString.to_string (BitString.from_list (List.reverse bytes)) {
-      Ok decoded -> Ok decoded
-      Err _ -> Err InvalidUrlEncodedUtf8
-    }
-    Err e -> Err e
+url_decode_component value = case decode_percent_bytes True value (BitString.to_list (BitString.from_string value)) [] {
+  Ok bytes -> case BitString.to_string (BitString.from_list (List.reverse bytes)) {
+    Ok decoded -> Ok decoded
+    Err _ -> Err InvalidUrlEncodedUtf8
   }
+  Err e -> Err e
+}
 
 fun decode_percent_bytes : Bool
   -> String
@@ -349,7 +616,7 @@ decode_percent_bytes plus_as_space original bytes acc = case bytes {
     else decode_percent_bytes plus_as_space original rest (43 :: acc)
   37 :: hi :: lo :: rest -> case (hex_digit hi, hex_digit lo) {
     (Just h, Just l) ->
-      decode_percent_bytes plus_as_space original rest (((h * 16) + l) :: acc)
+      decode_percent_bytes plus_as_space original rest (h * 16 + l :: acc)
     _ -> Err (InvalidPercentEscape original)
   }
   37 :: _ -> Err (InvalidPercentEscape original)
@@ -359,12 +626,13 @@ decode_percent_bytes plus_as_space original bytes acc = case bytes {
 fun hex_digit : Int -> Maybe Int
 hex_digit byte =
   if byte >= 48 && byte <= 57 then Just (byte - 48)
-  else if byte >= 65 && byte <= 70 then Just ((byte - 65) + 10)
-  else if byte >= 97 && byte <= 102 then Just ((byte - 97) + 10)
+  else if byte >= 65 && byte <= 70 then Just (byte - 65 + 10)
+  else if byte >= 97 && byte <= 102 then Just (byte - 97 + 10)
   else Nothing
 
 fun parse_cookie_header : String -> List (String, String)
-parse_cookie_header value = List.filter_map parse_cookie_pair (String.split ";" value)
+parse_cookie_header value =
+  List.filter_map parse_cookie_pair (String.split ";" value)
 
 fun parse_cookie_pair : String -> Maybe (String, String)
 parse_cookie_pair part = {
@@ -374,7 +642,10 @@ parse_cookie_pair part = {
     [_] -> Nothing
     name :: rest ->
       if name == "" then Nothing
-      else Just (cookie_decode_component name, cookie_decode_component (String.join "=" rest))
+      else Just (
+        cookie_decode_component name,
+        cookie_decode_component (String.join "=" rest),
+      )
   }
 }
 

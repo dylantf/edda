@@ -114,6 +114,39 @@ record FormValues {
 
 Decoded text form/query values. Preserves insertion order and duplicates.
 
+### MultipartFile
+
+```saga
+record MultipartFile {
+  filename: String,
+  content_type: Maybe String,
+  headers: List (String, String),
+  body: BitString
+}
+```
+
+A buffered file part from a multipart form.
+
+### MultipartValue
+
+```saga
+type MultipartValue =
+  | MultipartText String
+  | MultipartFileValue MultipartFile
+```
+
+A text or file value from a multipart form.
+
+### MultipartFormValues
+
+```saga
+record MultipartFormValues {
+  entries: List (String, MultipartValue)
+}
+```
+
+Decoded multipart form values. Preserves insertion order and duplicates.
+
 ### UrlEncodedError
 
 ```saga
@@ -136,6 +169,23 @@ type FormError =
 ```
 
 Errors from `application/x-www-form-urlencoded` request parsing.
+
+### MultipartError
+
+```saga
+type MultipartError =
+  | MultipartMissingBody
+  | MultipartMissingContentType
+  | MultipartUnexpectedContentType String
+  | MultipartMissingBoundary
+  | MultipartInvalidBoundary String
+  | MultipartMalformed String
+  | MultipartPartHeadersNotUtf8
+  | MultipartMissingName
+  | MultipartTextNotUtf8 String
+```
+
+Errors from `multipart/form-data` request parsing.
 
 ### StaticPathError
 
@@ -223,6 +273,14 @@ fun empty_form_values : FormValues
 
 Empty form values.
 
+### empty_multipart_form_values
+
+```saga
+fun empty_multipart_form_values : MultipartFormValues
+```
+
+Empty multipart form values.
+
 ## Functions
 
 ### method_str
@@ -230,6 +288,9 @@ Empty form values.
 ```saga
 fun method_str : Method -> String
 ```
+
+Return the wire string for a method. Prefer `show method` in new code; this
+helper remains for compatibility.
 
 ### param
 
@@ -317,6 +378,14 @@ fun form_values_from_entries : List (String, String) -> FormValues
 
 Build form values from ordered entries.
 
+### multipart_form_values_from_entries
+
+```saga
+fun multipart_form_values_from_entries : List (String, MultipartValue) -> MultipartFormValues
+```
+
+Build multipart form values from ordered entries.
+
 ### form_entries
 
 ```saga
@@ -380,6 +449,62 @@ fun form_value : String -> Request -> Result (Maybe String) FormError
 ```
 
 Decode and return the first form body value for `name`.
+
+### multipart_values
+
+```saga
+fun multipart_values : Request -> Result MultipartFormValues MultipartError
+```
+
+Decode a buffered `multipart/form-data` request body.
+
+### multipart_value
+
+```saga
+fun multipart_value : String -> Request -> Result (Maybe MultipartValue) MultipartError
+```
+
+Decode and return the first multipart value for `name`.
+
+### multipart_entries
+
+```saga
+fun multipart_entries : MultipartFormValues -> List (String, MultipartValue)
+```
+
+Return ordered multipart form entries.
+
+### multipart_get
+
+```saga
+fun multipart_get : String -> MultipartFormValues -> Maybe MultipartValue
+```
+
+Return the first multipart value for `name`.
+
+### multipart_get_all
+
+```saga
+fun multipart_get_all : String -> MultipartFormValues -> List MultipartValue
+```
+
+Return all multipart values for `name`, preserving insertion order.
+
+### multipart_text
+
+```saga
+fun multipart_text : String -> MultipartFormValues -> Maybe String
+```
+
+Return the first text multipart value for `name`.
+
+### multipart_file
+
+```saga
+fun multipart_file : String -> MultipartFormValues -> Maybe MultipartFile
+```
+
+Return the first file multipart value for `name`.
 
 ### body_bytes
 

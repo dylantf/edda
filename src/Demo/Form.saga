@@ -4,6 +4,7 @@ module Demo.Form
 # submitted FormValues, prints them to stdout, and renders them back.
 
 import Std.IO (console, println)
+import Std.BitString
 import Std.List
 import Std.String
 import Edda (
@@ -15,8 +16,12 @@ import Edda (
   html,
   form_values,
   form_entries,
+  multipart_values,
+  multipart_text,
+  multipart_file,
   FormValues,
-  FormError
+  FormError,
+  MultipartError
 )
 import SagaHttp.Http (Response)
 
@@ -62,6 +67,7 @@ form_page _ =
           </p>
           <button type="submit">Submit</button>
         </form>
+        <p><a href="/form/multipart">Multipart upload demo</a></p>
       </body>
     </html>
     """
@@ -78,6 +84,9 @@ render_values values =
 
 fun error_message : FormError -> String
 error_message err = debug err
+
+fun multipart_error_message : MultipartError -> String
+multipart_error_message err = debug err
 
 fun submit_form : Request -> Response needs {Stdio}
 submit_form req = case form_values req {
@@ -119,9 +128,101 @@ submit_form req = case form_values req {
   }
 }
 
+fun multipart_page : Request -> Response
+multipart_page _ =
+  html 200 """
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8">
+        <title>Edda multipart demo</title>
+      </head>
+      <body>
+        <h1>Edda multipart demo</h1>
+        <form method="post" action="/form/multipart" enctype="multipart/form-data">
+          <p>
+            <label>
+              Caption
+              <input name="caption" value="a tiny upload">
+            </label>
+          </p>
+          <p>
+            <label>
+              File
+              <input type="file" name="upload">
+            </label>
+          </p>
+          <button type="submit">Upload</button>
+        </form>
+        <p><a href="/form">Back to the urlencoded form</a></p>
+      </body>
+    </html>
+    """
+
+fun render_upload_result : String -> String -> String -> String
+render_upload_result caption filename content_type =
+  "caption = " <> caption <> "\nfilename = " <> filename <> "\ncontent_type = " <> content_type
+
+fun submit_multipart : Request -> Response needs {Stdio}
+submit_multipart req = case multipart_values req {
+  Ok values -> {
+    let caption = case multipart_text "caption" values {
+      Just text -> text
+      Nothing -> ""
+    }
+    let rendered = case multipart_file "upload" values {
+      Just file -> {
+        let content_type = case file.content_type {
+          Just value -> value
+          Nothing -> "(none)"
+        }
+        render_upload_result caption file.filename content_type
+          <> "\nbytes = "
+          <> show (BitString.size file.body)
+      }
+      Nothing -> "caption = " <> caption <> "\nfile = (none)"
+    }
+    println ("[multipart] submitted values:\n" <> rendered)
+    html 200 $"""
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Edda multipart result</title>
+        </head>
+        <body>
+          <h1>Submitted multipart values</h1>
+          <pre>{rendered}</pre>
+          <p><a href="/form/multipart">Back to the multipart form</a></p>
+        </body>
+      </html>
+      """
+  }
+  Err err -> {
+    let msg = multipart_error_message err
+    println ("[multipart] decode error: " <> msg)
+    html 400 $"""
+      <!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <title>Edda multipart error</title>
+        </head>
+        <body>
+          <h1>Invalid multipart submission</h1>
+          <pre>{msg}</pre>
+          <p><a href="/form/multipart">Back to the multipart form</a></p>
+        </body>
+      </html>
+      """
+  }
+}
+
 pub fun app : Request -> Response
 app req =
   choose [
     route GET "/" form_page,
     route POST "/" submit_form,
+    route GET "/multipart" multipart_page,
+    route POST "/multipart" submit_multipart,
   ] req with console

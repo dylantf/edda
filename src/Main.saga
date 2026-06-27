@@ -46,7 +46,7 @@ home _ =
       /timing/{fast,work}
       /secret/{me,account}
       /errors/{items/42,items/13,items/x,conflict,oops,divide}
-      /form
+      /form, /form/multipart
       /session, /session/secret
       /static/cats/cat1.jpg
       /json/users, /json/users/:id, POST /json/users, POST /json/users/effect

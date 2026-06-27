@@ -7,7 +7,6 @@ import Std.List
 import Std.String
 import Edda.Request (
   Request,
-  Method,
   GET
 )
 import Edda.Router (Skip)
