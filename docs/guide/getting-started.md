@@ -175,6 +175,7 @@ The demo server listens on `http://localhost:8080`.
 - `/session` demonstrates a tiny cookie-backed login/logout flow.
 - `/session/secret` is a protected route that redirects back to `/session`
   unless the demo session cookie is present.
+- `/static/cats/cat1.jpg` is served by the static-directory helper.
 
 ## What's next
 

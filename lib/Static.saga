@@ -1,0 +1,165 @@
+module Edda.Static
+
+import Std.BitString
+import Std.File (File)
+import Std.File as File
+import Std.List
+import Std.String
+import Edda.Request (
+  Request,
+  Method,
+  GET
+)
+import Edda.Router (Skip)
+import Edda.Response (not_found)
+import SagaHttp.Http as Http (Response, text)
+
+#@ Errors from decoding and validating a static request path.
+pub type StaticPathError =
+  | InvalidStaticPercentEscape String
+  | InvalidStaticPathUtf8
+  | UnsafeStaticPathSegment String
+  deriving (Debug, Eq)
+
+#@ Serve a specific filesystem path as a buffered response.
+#@
+#@ The content type is inferred from the file extension.
+pub fun file_response : String -> Response needs {File}
+file_response path =
+  file_response_as (content_type_for_path path) path
+
+#@ Serve a specific filesystem path as a buffered response with an explicit
+#@ content type.
+pub fun file_response_as : String -> String -> Response needs {File}
+file_response_as content_type path = case File.read! path {
+  Ok body -> Http.bytes 200 [("Content-Type", content_type)] (BitString.from_string body)
+  Err File.NotFound -> not_found
+  Err File.NotDirectory -> not_found
+  Err File.IsDirectory -> not_found
+  Err File.PermissionDenied -> text 403 "forbidden"
+  Err _ -> text 500 "could not read file"
+}
+
+#@ Serve files from `root` under `url_prefix`.
+#@
+#@ The matched prefix is stripped, the remaining path is percent-decoded, and
+#@ unsafe segments (`.`, `..`, decoded slashes, and backslashes) are rejected.
+pub fun static_dir : String -> String -> Request -> Response needs {Skip, File}
+static_dir url_prefix root req =
+  if req.method == GET then {
+    case match_prefix (path_segments url_prefix) (path_segments req.path) {
+      Just remaining -> case static_path root remaining {
+        Ok path -> file_response path
+        Err (InvalidStaticPercentEscape _) -> text 400 "bad static path"
+        Err InvalidStaticPathUtf8 -> text 400 "bad static path"
+        Err (UnsafeStaticPathSegment _) -> text 403 "forbidden"
+      }
+      Nothing -> skip! ()
+    }
+  }
+  else skip! ()
+
+fun static_path : String -> List String -> Result String StaticPathError
+static_path root raw_segments = case decode_segments raw_segments [] {
+  Ok [] -> Err (UnsafeStaticPathSegment "")
+  Ok segments -> Ok (join_path root (String.join "/" segments))
+  Err e -> Err e
+}
+
+fun decode_segments : List String -> List String -> Result (List String) StaticPathError
+decode_segments segments acc = case segments {
+  [] -> Ok (List.reverse acc)
+  seg :: rest -> case decode_segment seg {
+    Ok decoded ->
+      if safe_segment decoded then decode_segments rest (decoded :: acc)
+      else Err (UnsafeStaticPathSegment decoded)
+    Err e -> Err e
+  }
+}
+
+fun decode_segment : String -> Result String StaticPathError
+decode_segment value =
+  case decode_percent_bytes value (BitString.to_list (BitString.from_string value)) [] {
+    Ok bytes -> case BitString.to_string (BitString.from_list (List.reverse bytes)) {
+      Ok decoded -> Ok decoded
+      Err _ -> Err InvalidStaticPathUtf8
+    }
+    Err e -> Err e
+  }
+
+fun decode_percent_bytes : String -> List Int -> List Int -> Result (List Int) StaticPathError
+decode_percent_bytes original bytes acc = case bytes {
+  [] -> Ok acc
+  37 :: hi :: lo :: rest -> case (hex_digit hi, hex_digit lo) {
+    (Just h, Just l) -> decode_percent_bytes original rest (((h * 16) + l) :: acc)
+    _ -> Err (InvalidStaticPercentEscape original)
+  }
+  37 :: _ -> Err (InvalidStaticPercentEscape original)
+  b :: rest -> decode_percent_bytes original rest (b :: acc)
+}
+
+fun hex_digit : Int -> Maybe Int
+hex_digit byte =
+  if byte >= 48 && byte <= 57 then Just (byte - 48)
+  else if byte >= 65 && byte <= 70 then Just ((byte - 65) + 10)
+  else if byte >= 97 && byte <= 102 then Just ((byte - 97) + 10)
+  else Nothing
+
+fun safe_segment : String -> Bool
+safe_segment segment =
+  segment != ""
+    && segment != "."
+    && segment != ".."
+    && not (String.contains "/" segment)
+    && not (String.contains "\\" segment)
+
+fun join_path : String -> String -> String
+join_path root rel =
+  if String.ends_with "/" root then root <> rel
+  else root <> "/" <> rel
+
+fun path_segments : String -> List String
+path_segments path = String.split "/" path |> List.filter (fun s -> s != "")
+
+fun match_prefix : List String -> List String -> Maybe (List String)
+match_prefix prefix path = case prefix {
+  [] -> Just path
+  p :: ps -> case path {
+    [] -> Nothing
+    s :: ss ->
+      if p == s then match_prefix ps ss
+      else Nothing
+  }
+}
+
+fun content_type_for_path : String -> String
+content_type_for_path path = case file_extension path {
+  "html" -> "text/html; charset=utf-8"
+  "htm" -> "text/html; charset=utf-8"
+  "css" -> "text/css; charset=utf-8"
+  "js" -> "text/javascript; charset=utf-8"
+  "mjs" -> "text/javascript; charset=utf-8"
+  "json" -> "application/json"
+  "txt" -> "text/plain; charset=utf-8"
+  "csv" -> "text/csv; charset=utf-8"
+  "svg" -> "image/svg+xml"
+  "png" -> "image/png"
+  "jpg" -> "image/jpeg"
+  "jpeg" -> "image/jpeg"
+  "gif" -> "image/gif"
+  "webp" -> "image/webp"
+  "ico" -> "image/x-icon"
+  "wasm" -> "application/wasm"
+  "pdf" -> "application/pdf"
+  _ -> "application/octet-stream"
+}
+
+fun file_extension : String -> String
+file_extension path =
+  if String.contains "." path then {
+    case List.reverse (String.split "." path) {
+      ext :: _ -> String.to_lower ext
+      [] -> ""
+    }
+  }
+  else ""

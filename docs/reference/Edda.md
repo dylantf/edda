@@ -137,6 +137,17 @@ type FormError =
 
 Errors from `application/x-www-form-urlencoded` request parsing.
 
+### StaticPathError
+
+```saga
+type StaticPathError =
+  | InvalidStaticPercentEscape String
+  | InvalidStaticPathUtf8
+  | UnsafeStaticPathSegment String
+```
+
+Errors from decoding and validating a static request path.
+
 ### Request
 
 ```saga
@@ -434,6 +445,34 @@ fun octet_stream : Int -> BitString -> Response
 ```
 
 Build a binary response with `application/octet-stream`.
+
+### file_response
+
+```saga
+fun file_response : String -> Response needs {File}
+```
+
+Serve a specific filesystem path as a buffered response. The content type is
+inferred from the file extension.
+
+### file_response_as
+
+```saga
+fun file_response_as : String -> String -> Response needs {File}
+```
+
+Serve a specific filesystem path as a buffered response with an explicit
+content type.
+
+### static_dir
+
+```saga
+fun static_dir : String -> String -> Request -> Response needs {Skip, File}
+```
+
+Serve files from `root` under `url_prefix`. The matched prefix is stripped, the
+remaining path is percent-decoded, and unsafe segments (`.`, `..`, decoded
+slashes, and backslashes) are rejected.
 
 ### set_cookie
 

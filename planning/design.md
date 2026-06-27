@@ -599,13 +599,19 @@ have multiple real apps to see what shape feels right.
 
 ### Static files
 
-Buffered file responses are straightforward if routes can read the file before
-returning: detect a content type, read bytes, and return a `bytes` response.
-The useful API might be a single-file helper plus a `static_dir` router helper.
+Buffered static files are now in core:
 
-The hard parts are path traversal defense, MIME detection, cache headers,
-conditional requests (`ETag`, `If-None-Match`, `Last-Modified`), range
-requests, and deciding whether this belongs in Edda core or a sidecar package.
+- `file_response : String -> Response needs {File}` serves a known filesystem
+  path with inferred content type.
+- `file_response_as : String -> String -> Response needs {File}` serves a known
+  filesystem path with an explicit content type.
+- `static_dir : String -> String -> Request -> Response needs {Skip, File}`
+  serves files from a root directory under a URL prefix. It decodes `%XX` path
+  segments and rejects traversal (`.`, `..`, decoded slashes, and backslashes).
+
+Still worth adding: broader MIME detection, cache headers, conditional
+requests (`ETag`, `If-None-Match`, `Last-Modified`), range requests, and maybe
+index-file policy. Directory listings remain out of scope.
 
 ### Streaming files and large responses
 

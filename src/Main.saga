@@ -1,6 +1,7 @@
 module Main
 
 import Std.Actor (beam_actor)
+import Std.File (fs)
 import Std.IO (console, println)
 import Demo.AuthMiddleware as Auth
 import Demo.ErrorMiddleware as Errors
@@ -9,7 +10,7 @@ import Demo.JsonApi as JsonApi
 import Demo.Session as Session
 import Demo.SpecRoutes as Spec
 import Demo.TimingMiddleware as Timing
-import Edda (Request, mount, choose, to_handler)
+import Edda (Request, mount, choose, static_dir, to_handler)
 import SagaHttp.Http (
   serve,
   await_shutdown,
@@ -47,12 +48,14 @@ home _ =
       /errors/{items/42,items/13,items/x,conflict,oops,divide}
       /form
       /session, /session/secret
+      /static/cats/cat1.jpg
       /json/users, /json/users/:id, POST /json/users, POST /json/users/effect
     """
 
 fun app : Request -> Response
 app req =
   choose [
+    static_dir "/static" "src/static",
     mount "/timing" Timing.app,
     mount "/secret" Auth.app,
     mount "/errors" Errors.app,
@@ -61,7 +64,7 @@ app req =
     mount "/json" JsonApi.app,
     mount "/spec" Spec.app,
     fun r -> home r,
-  ] req
+  ] req with {fs}
 
 main () = {
   let cfg = { default_config | port: 8080 }

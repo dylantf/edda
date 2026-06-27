@@ -101,6 +101,7 @@ secret_page username = {
       <body>
         <h1>Secret session page</h1>
         <p>Hello, <strong>{safe_user}</strong>. This page was restored from your session cookie.</p>
+        <p><img src="/static/cats/cat1.jpg" alt="A secret cat" style="max-width: 480px; width: 100%; height: auto;"></p>
         <p><a href="/session">Back to the session page</a></p>
       </body>
     </html>
