@@ -517,12 +517,9 @@ Core response helpers now available:
 - `octet_stream : Int -> BitString -> Response`.
 - Cookie helpers: `set_cookie`, `set_cookie_with`, `delete_cookie`,
   `delete_cookie_with`, plus `CookieOptions` for `Path`, `Domain`,
-  `Max-Age`, `HttpOnly`, `Secure`, and `SameSite`.
-
-Still worth adding:
-
-- Cookie name validation, `Expires`, and stricter handling for `SameSite=None`
-  plus `Secure`.
+  `Expires`, `Max-Age`, `HttpOnly`, `Secure`, and `SameSite`. Names and values
+  are percent-encoded, checked variants validate cookie names, and
+  `SameSite=None` automatically emits `Secure`.
 
 Core request body helpers now available:
 

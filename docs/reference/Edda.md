@@ -63,12 +63,22 @@ type SameSite =
 
 SameSite values for outgoing cookies.
 
+### CookieError
+
+```saga
+type CookieError =
+  | InvalidCookieName String
+```
+
+Cookie validation errors from checked cookie helpers.
+
 ### CookieOptions
 
 ```saga
 record CookieOptions {
   path: Maybe String,
   domain: Maybe String,
+  expires: Maybe NaiveDateTime,
   max_age: Maybe Int,
   http_only: Bool,
   secure: Bool,
@@ -77,7 +87,8 @@ record CookieOptions {
 ```
 
 Options for outgoing `Set-Cookie` headers. Names and values are percent-encoded
-when emitted.
+when emitted. `expires` is formatted as an HTTP cookie date with a `GMT` suffix;
+pass a GMT/UTC `NaiveDateTime`. `SameSite=None` automatically emits `Secure`.
 
 ### CorsConfig
 
@@ -440,7 +451,33 @@ fun set_cookie_with : String -> String -> CookieOptions -> Response -> Response
 ```
 
 Add a `Set-Cookie` response header with explicit options. Cookie names and
-values are percent-encoded.
+values are percent-encoded. `SameSite=None` automatically emits `Secure`.
+
+### valid_cookie_name
+
+```saga
+fun valid_cookie_name : String -> Bool
+```
+
+Return whether a cookie name is a non-empty RFC token.
+
+### set_cookie_checked
+
+```saga
+fun set_cookie_checked : String -> String -> Response -> Result Response CookieError
+```
+
+Add a cookie with default options, returning `InvalidCookieName` for invalid
+names.
+
+### set_cookie_with_checked
+
+```saga
+fun set_cookie_with_checked : String -> String -> CookieOptions -> Response -> Result Response CookieError
+```
+
+Add a cookie with explicit options, returning `InvalidCookieName` for invalid
+names.
 
 ### delete_cookie
 
@@ -457,7 +494,26 @@ fun delete_cookie_with : String -> CookieOptions -> Response -> Response
 ```
 
 Expire a cookie with explicit options. Use matching `path`/`domain` options
-when deleting scoped cookies.
+when deleting scoped cookies. Emits both `Max-Age=0` and an old `Expires`
+date.
+
+### delete_cookie_checked
+
+```saga
+fun delete_cookie_checked : String -> Response -> Result Response CookieError
+```
+
+Expire a cookie with default options, returning `InvalidCookieName` for invalid
+names.
+
+### delete_cookie_with_checked
+
+```saga
+fun delete_cookie_with_checked : String -> CookieOptions -> Response -> Result Response CookieError
+```
+
+Expire a cookie with explicit options, returning `InvalidCookieName` for invalid
+names. Emits both `Max-Age=0` and an old `Expires` date.
 
 ### with_cors
 

@@ -1,6 +1,7 @@
 module Edda.Response
 
 import Std.BitString
+import Std.DateTime (NaiveDateTime)
 import Std.Int
 import Std.List
 import Std.String
@@ -72,12 +73,21 @@ pub type SameSite =
   | SameSiteNone
   deriving (Debug, Eq)
 
+#@ Cookie validation errors from checked cookie helpers.
+pub type CookieError =
+  | InvalidCookieName String
+  deriving (Debug, Eq)
+
 #@ Options for outgoing `Set-Cookie` headers.
 #@
 #@ Cookie names and values are percent-encoded when emitted.
+#@ `expires` should be a GMT/UTC datetime; it is formatted with a `GMT` suffix.
+#@ If `same_site` is `SameSiteNone`, `Secure` is emitted even when `secure` is
+#@ false, matching modern browser requirements.
 pub record CookieOptions {
   path: Maybe String,
   domain: Maybe String,
+  expires: Maybe NaiveDateTime,
   max_age: Maybe Int,
   http_only: Bool,
   secure: Bool,
@@ -89,6 +99,7 @@ pub fun default_cookie_options : CookieOptions
 default_cookie_options = CookieOptions {
   path: Nothing,
   domain: Nothing,
+  expires: Nothing,
   max_age: Nothing,
   http_only: False,
   secure: False,
@@ -104,7 +115,27 @@ set_cookie name value resp = set_cookie_with name value default_cookie_options r
 #@ Cookie names and values are percent-encoded.
 pub fun set_cookie_with : String -> String -> CookieOptions -> Response -> Response
 set_cookie_with name value options resp =
-  with_header "Set-Cookie" (cookie_header_value name value options) resp
+  with_header "Set-Cookie" (cookie_header_value name value (normalize_cookie_options options)) resp
+
+#@ Validate a cookie name against the RFC token character set.
+pub fun valid_cookie_name : String -> Bool
+valid_cookie_name name =
+  name != "" && List.all cookie_name_byte_allowed (BitString.to_list (BitString.from_string name))
+
+#@ Add a `Set-Cookie` response header with default options, validating the name.
+pub fun set_cookie_checked : String -> String -> Response -> Result Response CookieError
+set_cookie_checked name value resp =
+  set_cookie_with_checked name value default_cookie_options resp
+
+#@ Add a `Set-Cookie` response header with explicit options, validating the name.
+pub fun set_cookie_with_checked : String
+  -> String
+  -> CookieOptions
+  -> Response
+  -> Result Response CookieError
+set_cookie_with_checked name value options resp =
+  if valid_cookie_name name then Ok (set_cookie_with name value options resp)
+  else Err (InvalidCookieName name)
 
 #@ Expire a cookie with default options.
 pub fun delete_cookie : String -> Response -> Response
@@ -115,7 +146,21 @@ delete_cookie name resp = delete_cookie_with name default_cookie_options resp
 #@ Use matching `path`/`domain` options when deleting scoped cookies.
 pub fun delete_cookie_with : String -> CookieOptions -> Response -> Response
 delete_cookie_with name options resp =
-  set_cookie_with name "" ({ options | max_age: Just 0 }) resp
+  set_cookie_with name "" ({ options | expires: Just expired_cookie_date, max_age: Just 0 }) resp
+
+#@ Expire a cookie with default options, validating the name.
+pub fun delete_cookie_checked : String -> Response -> Result Response CookieError
+delete_cookie_checked name resp =
+  delete_cookie_with_checked name default_cookie_options resp
+
+#@ Expire a cookie with explicit options, validating the name.
+pub fun delete_cookie_with_checked : String
+  -> CookieOptions
+  -> Response
+  -> Result Response CookieError
+delete_cookie_with_checked name options resp =
+  if valid_cookie_name name then Ok (delete_cookie_with name options resp)
+  else Err (InvalidCookieName name)
 
 #@ CORS policy for `with_cors`.
 pub record CorsConfig {
@@ -175,6 +220,21 @@ same_site_attr value = case value {
   Nothing -> ""
 }
 
+fun expires_attr : Maybe NaiveDateTime -> String
+expires_attr value = case value {
+  Just dt -> "; Expires=" <> DateTime.format "%a, %d %b %Y %T GMT" dt
+  Nothing -> ""
+}
+
+fun expired_cookie_date : NaiveDateTime
+expired_cookie_date = DateTime.new 1970 1 1 0 0 0
+
+fun normalize_cookie_options : CookieOptions -> CookieOptions
+normalize_cookie_options options = case options.same_site {
+  Just SameSiteNone -> { options | secure: True }
+  _ -> options
+}
+
 fun cookie_header_value : String -> String -> CookieOptions -> String
 cookie_header_value name value options =
   cookie_encode_component name
@@ -182,6 +242,7 @@ cookie_header_value name value options =
     <> cookie_encode_component value
     <> maybe_attr "Path" options.path
     <> maybe_attr "Domain" options.domain
+    <> expires_attr options.expires
     <> maybe_int_attr "Max-Age" options.max_age
     <> bool_attr "HttpOnly" options.http_only
     <> bool_attr "Secure" options.secure
@@ -204,6 +265,20 @@ cookie_byte_allowed byte =
     || byte >= 45 && byte <= 58
     || byte >= 60 && byte <= 91
     || byte >= 93 && byte <= 126
+
+fun cookie_name_byte_allowed : Int -> Bool
+cookie_name_byte_allowed byte =
+  byte == 33
+    || byte >= 35 && byte <= 39
+    || byte == 42
+    || byte == 43
+    || byte == 45
+    || byte == 46
+    || byte >= 48 && byte <= 57
+    || byte >= 65 && byte <= 90
+    || byte >= 94 && byte <= 122
+    || byte == 124
+    || byte == 126
 
 fun percent_encode_byte : Int -> String
 percent_encode_byte byte =
