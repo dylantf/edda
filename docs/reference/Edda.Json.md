@@ -7,6 +7,8 @@ JSON request/response helpers for Edda.
 Built on top of saga_json. The `ToJson` / `FromJson` traits do the work;
 this module is just the glue between them and Edda's `Request` / `Response`.
 
+This module is part of Edda's core API.
+
 ## Types
 
 ### BodyError
@@ -53,4 +55,3 @@ fun body_error_response : BodyError -> Response
 A reasonable default 400 response for `BodyError`. Most apps will
 want this directly; apps with structured error envelopes can write
 their own mapping.
-

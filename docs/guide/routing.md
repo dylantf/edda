@@ -5,6 +5,9 @@ functions into an app. Each route is a `Request -> Response` function
 that either produces a response or signals "I don't match — try the
 next one."
 
+This is part of Edda's core API: `Request`, `Method`, `route`, `choose`,
+`group`, `mount`, `param`, `from_http`, and `to_handler`.
+
 ## The shape of a route
 
 A route is just a function:
@@ -24,6 +27,11 @@ route GET "/users/:id" show_user
 path pattern match, and `skip!`s otherwise. The `Skip` effect is what
 the router uses to walk past non-matching routes; `choose` discharges
 it.
+
+Route paths are matched by segments. Empty segments are ignored, so `/users`
+and `/users/` match the same pattern. A plain segment must match exactly, and
+a segment starting with `:` captures the request segment into `req.params`.
+`route` only matches when the pattern consumes the whole current `req.path`.
 
 ## `choose`
 
@@ -99,6 +107,10 @@ group "/users/:id" [
 ```
 
 works as expected.
+
+Once a `group` prefix matches, unmatched inner routes return that inner
+`choose`'s 404 rather than falling through to later outer routes. Use a
+catch-all inside the group when you want a custom 404 for that prefix.
 
 ## `mount`: attach a sub-app
 

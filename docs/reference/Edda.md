@@ -76,7 +76,7 @@ Look up a captured path parameter by name.
 ### route
 
 ```saga
-fun route : Method -> String -> Request -> Response -> Request -> Response needs {Skip, ..e}
+fun route : Method -> String -> (Request -> Response needs {..e}) -> Request -> Response needs {Skip, ..e}
 ```
 
 Build a route. If method matches and the pattern fully consumes the path
@@ -86,8 +86,10 @@ the route skips to let the next route try.
 ### choose
 
 ```saga
-fun choose : List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+fun choose : List (Request -> Response needs {Skip, ..e}) -> Request -> Response needs {..e}
 ```
+
+Try each route in order. If every route skips, return `not_found`.
 
 ### group
 
@@ -98,10 +100,13 @@ fun group : String -> List (Request -> Response needs {Skip, ..e}) -> Request ->
 Match a path prefix and run the inner routes against the remainder.
 Captured `:name` params accumulate and are visible to sub-routes.
 
+Once the prefix matches, the inner `choose` owns the request. If no inner route
+matches, the result is that inner `choose`'s `not_found`.
+
 ### mount
 
 ```saga
-fun mount : String -> Request -> Response -> Request -> Response needs {Skip}
+fun mount : String -> (Request -> Response) -> Request -> Response needs {Skip}
 ```
 
 Mount a sub-app whose effects are already handled. Captured `:name`
@@ -118,7 +123,7 @@ Lift a SagaHttp.Http.Request into an Edda.Request.
 ### to_handler
 
 ```saga
-fun to_handler : Request -> Response -> Http.Request -> Response
+fun to_handler : (Request -> Response) -> Http.Request -> Response
 ```
 
 Adapt an Edda app to the `Request -> Response` shape `SagaHttp.serve`

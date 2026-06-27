@@ -8,6 +8,11 @@ trait machinery doing the work.
 A record with `deriving (ToJson, FromJson)` round-trips through HTTP
 without a hand-written codec.
 
+This is part of Edda's core API: `json`, `body_json`, `BodyError`, and
+`body_error_response`. These helpers intentionally stay small; application
+specific envelopes, auth, and validation policies belong in ordinary routes or
+effect handlers.
+
 ## Encoding: `json`
 
 ```saga

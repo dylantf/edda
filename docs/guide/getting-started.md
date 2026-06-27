@@ -5,8 +5,9 @@ Edda is an effect-based web framework for Saga. It sits on top of
 router, request/response wrappers, and a few conventions for installing
 effects on your routes.
 
-> **Status: very work-in-progress.** Edda is exploratory. The API will
-> change, probably radically.
+> **Status: early but usable.** The core router and `Edda.Json` APIs are the
+> first stable slice. `Edda.Spec` and OpenAPI generation are still experimental
+> and may change as the design settles.
 
 ## What it gives you
 
