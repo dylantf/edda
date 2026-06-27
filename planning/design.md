@@ -433,6 +433,20 @@ default mapping (`body_error_response`). The effect pattern is just
 the [opt-in effect handler](#2-opt-in-effect-handlers) shape applied
 to body decoding — there's nothing framework-specific to add.
 
+## Endpoint specs and OpenAPI
+
+`Edda.Spec` is an experimental sidecar, not the future primary routing API.
+The primary API remains the small function-combinator surface in `Edda`:
+`route`, `choose`, `group`, and `mount`.
+
+The reason to keep `Edda.Spec` in-tree for now is practical: it lets us
+prototype type-driven route contracts against the real router and explore
+whether one route definition can serve both dispatch and OpenAPI generation.
+That experiment may eventually become a separate package, stay as an optional
+sidecar module, or feed improvements back into the core API. Until then, app
+authors should treat it as exploratory and write ordinary routes for the stable
+path.
+
 ## Open questions
 
 ### Router data structure

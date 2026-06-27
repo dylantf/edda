@@ -1,7 +1,9 @@
 module Demo.SpecRoutes
 
-# Sketch demo: build routes via the Edda.Spec builder. Same definitions
-# drive both the runtime router and the OpenAPI document at /openapi.json.
+# Experimental sidecar demo: build routes via the Edda.Spec builder. Same
+# definitions drive both the runtime router and the OpenAPI document at
+# /openapi.json. This is not the primary Edda routing style; it is a playground
+# for type-driven route contracts.
 
 import Std.List
 import Edda (Request, GET, choose, param)

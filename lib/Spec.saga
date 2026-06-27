@@ -1,11 +1,15 @@
-#@ Endpoint specification: a fluent builder that produces a `RouteSchema`,
-#@ which the router consumes for dispatch and a spec generator consumes for
-#@ OpenAPI emission. One definition, two extractors, no runtime overhead on
-#@ the dispatch path.
+#@ Experimental sidecar for endpoint specifications. The core router API is
+#@ still `Edda.route`, `choose`, `group`, and `mount`; this module is a
+#@ prototype for type-driven route contracts that can also emit OpenAPI.
 #@
-#@ Status: sketch. Schema/ContentSpec wiring is intentionally deferred —
-#@ the builder mechanics and type-check at `performed_by` are the part
-#@ worth pinning down first.
+#@ The builder produces a `RouteSchema`, which the router consumes for dispatch
+#@ and a spec generator consumes for OpenAPI emission. One definition, two
+#@ extractors, no runtime overhead on the dispatch path.
+#@
+#@ Status: experimental sidecar. It lives in-tree so it can evolve against real
+#@ Edda internals, but it is not the future primary route API yet. Schema and
+#@ ContentSpec wiring is intentionally deferred; the builder mechanics and
+#@ type-check at `performed_by` are the part worth pinning down first.
 module Edda.Spec
 
 import Std.Base (KnownSymbol, Proxy)

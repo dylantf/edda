@@ -6,8 +6,8 @@ router, request/response wrappers, and a few conventions for installing
 effects on your routes.
 
 > **Status: early but usable.** The core router and `Edda.Json` APIs are the
-> first stable slice. `Edda.Spec` and OpenAPI generation are still experimental
-> and may change as the design settles.
+> first stable slice. `Edda.Spec` is an experimental sidecar for type-driven
+> route contracts and OpenAPI generation, not the primary routing API.
 
 ## What it gives you
 
