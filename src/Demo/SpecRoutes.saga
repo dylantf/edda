@@ -8,23 +8,20 @@ module Demo.SpecRoutes
 import Std.List
 import Edda (Request, GET, choose, param)
 import Edda.Spec (
-  Status,
   Success,
   BadRequest,
   NotFound,
-  Other,
   TypedResponse,
   RouteSchema,
   OpenApiInfo,
-  JsonSchema,
   route,
   responds,
+  responds_success_json,
   path_param,
   performed_by,
   as_route,
   ok,
   text_response,
-  json_of,
   plain_text,
   describe,
   Schema,
@@ -54,18 +51,14 @@ list_users _ = ok [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }]
 fun list_users_spec : RouteSchema
 list_users_spec =
   route GET "/users"
-  |> responds Success (
-       json_of (schema_of (default : List User)) |> describe "All users"
-     )
+  |> responds_success_json Success "All users"
   |> performed_by list_users
 
 fun show_user_spec : RouteSchema
 show_user_spec =
   route GET "/users/:id"
   |> path_param "id" "The user's id"
-  |> responds Success (
-       json_of (schema_of (default : User)) |> describe "The user"
-     )
+  |> responds_success_json Success "The user"
   |> responds NotFound (plain_text |> describe "User does not exist")
   |> performed_by show_user
 

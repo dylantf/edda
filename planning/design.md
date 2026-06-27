@@ -447,6 +447,13 @@ sidecar module, or feed improvements back into the core API. Until then, app
 authors should treat it as exploratory and write ordinary routes for the stable
 path.
 
+The typed response promise should stay honest. Plain `responds` is metadata
+only; it records a status/content pair but does not prove the handler returns
+that shape. Typed helpers such as `responds_success_json` derive the success
+schema from the same builder phantom that `performed_by` unifies with the
+handler's `TypedResponse a`, so that specific path keeps schema and handler
+return type coupled.
+
 ## Open questions
 
 ### Router data structure

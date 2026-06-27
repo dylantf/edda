@@ -75,8 +75,9 @@ status_code (Other n) = n
 #
 # `Action` is the collapsed shape stored in `RouteSchema` and handed to
 # `choose`. `TypedAction a` is the builder-time shape; the phantom `a`
-# is the success-response body type, used to type-check the handler
-# against the declared response.
+# is the handler's success-response body type. It is checked at
+# `performed_by`; only typed metadata helpers such as `responds_success_json`
+# derive spec metadata from that same type.
 # ---------------------------------------------------------------------------
 
 pub type alias Action = Request -> Response
@@ -330,10 +331,9 @@ pub record RouteSchema {
 # pinned at the terminal `performed_by` step, where the action's return
 # type must match.
 #
-# This keeps the per-combinator API loose (you can call them in any
-# order, none of them require type-juggling) while still landing the
-# one compile-time check that matters: the action does what the route
-# said it would.
+# Plain metadata combinators stay loose. Typed metadata helpers can opt into
+# stronger coupling by deriving schemas from the same phantom `a` that the
+# handler later has to return.
 # ---------------------------------------------------------------------------
 
 pub record RouteBuilder a {
@@ -372,10 +372,9 @@ json_body schema desc b =
     }),
   }
 
-# Declare a response. Adds spec metadata; doesn't constrain the phantom.
-# Use for any response shape the route may produce (success, errors,
-# alternates). The handler is checked against the success type when
-# the builder is collapsed by `performed_by`.
+# Declare a response. Adds spec metadata only; it does not constrain the
+# builder phantom or prove that the handler can produce this shape. Use for
+# error responses, alternates, and hand-written metadata.
 pub fun responds : Status -> ContentSpec -> RouteBuilder a -> RouteBuilder a
 responds status spec b =
   { b |
@@ -389,10 +388,18 @@ responds status spec b =
     ) :: b.responses,
   }
 
+# Declare the JSON response for the builder's success type. Unlike plain
+# `responds`, this derives the schema from the same phantom `a` that
+# `performed_by` later checks against the handler's `TypedResponse a`.
+pub fun responds_success_json : Status -> String -> RouteBuilder a -> RouteBuilder a
+  where {a: Schema, a: Default}
+responds_success_json status desc b =
+  responds status (json_of (schema_of (default : a)) |> describe desc) b
+
 # Terminal step: collapse the builder into a RouteSchema by attaching
 # the action. The compiler unifies the action's return type with the
-# builder's phantom `a`, so a mismatch with the declared response type
-# would land here.
+# builder's phantom `a`. If typed metadata helpers derived schemas from that
+# phantom, the documented success schema and handler return type stay in sync.
 pub fun performed_by : (Request -> TypedResponse a) -> RouteBuilder a -> RouteSchema
 performed_by typed_action b = RouteSchema {
   method: b.method,

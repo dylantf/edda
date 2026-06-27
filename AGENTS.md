@@ -46,8 +46,8 @@ the route paths easy to exercise manually.
 ## Agent-Specific Instructions
 
 Read `planning/design.md` before making architectural changes. For Saga
-language help, use `~/projects/saga-website/llms.txt` as the guide index, or
-`~/projects/saga-website/syntax-reference.md` to double-check surface syntax.
+language help, use `~/projects/saga-website/public/llms.txt` as the guide index, or
+`~/projects/saga-website/public/syntax-reference.md` to double-check surface syntax.
 Avoid reverting unrelated work. Treat `Edda.Spec` as experimental unless the
 task explicitly asks to stabilize it. If Saga hits an unexpected compiler panic
 or runtime panic, pause work and report it instead of working around it; those
