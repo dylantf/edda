@@ -37,11 +37,7 @@ html status body = Response {
 
 #@ A 204 response with an empty body.
 pub fun no_content : Response
-no_content = Response {
-  status: 204,
-  headers: [],
-  body: Buffered "",
-}
+no_content = Response { status: 204, headers: [], body: Buffered "" }
 
 #@ Build a redirect response with the given status and Location.
 pub fun redirect : Int -> String -> Response
@@ -63,7 +59,8 @@ content_type value resp =
 
 #@ Build a binary response with `application/octet-stream`.
 pub fun octet_stream : Int -> BitString -> Response
-octet_stream status body = Http.bytes status [("Content-Type", "application/octet-stream")] body
+octet_stream status body =
+  Http.bytes status [("Content-Type", "application/octet-stream")] body
 
 #@ SameSite values for outgoing cookies.
 pub type SameSite =
@@ -108,21 +105,29 @@ default_cookie_options = CookieOptions {
 #@ Add a `Set-Cookie` response header with default options.
 #@ Cookie names and values are percent-encoded.
 pub fun set_cookie : String -> String -> Response -> Response
-set_cookie name value resp = set_cookie_with name value default_cookie_options resp
+set_cookie name value resp =
+  set_cookie_with name value default_cookie_options resp
 
 #@ Add a `Set-Cookie` response header with explicit options.
 #@ Cookie names and values are percent-encoded.
-pub fun set_cookie_with : String -> String -> CookieOptions -> Response -> Response
+pub fun set_cookie_with : String
+  -> String
+  -> CookieOptions
+  -> Response
+  -> Response
 set_cookie_with name value options resp =
   with_header "Set-Cookie" (cookie_header_value name value (normalize_cookie_options options)) resp
 
 #@ Validate a cookie name against the RFC token character set.
 pub fun valid_cookie_name : String -> Bool
-valid_cookie_name name =
-  name != "" && List.all cookie_name_byte_allowed (BitString.to_list (BitString.from_string name))
+valid_cookie_name name = name != ""
+  && List.all cookie_name_byte_allowed (BitString.to_list (BitString.from_string name))
 
 #@ Add a `Set-Cookie` response header with default options, validating the name.
-pub fun set_cookie_checked : String -> String -> Response -> Result Response CookieError
+pub fun set_cookie_checked : String
+  -> String
+  -> Response
+  -> Result Response CookieError
 set_cookie_checked name value resp =
   set_cookie_with_checked name value default_cookie_options resp
 
@@ -145,10 +150,15 @@ delete_cookie name resp = delete_cookie_with name default_cookie_options resp
 #@ Use matching `path`/`domain` options when deleting scoped cookies.
 pub fun delete_cookie_with : String -> CookieOptions -> Response -> Response
 delete_cookie_with name options resp =
-  set_cookie_with name "" ({ options | expires: Just expired_cookie_date, max_age: Just 0 }) resp
+  set_cookie_with name "" ({ options |
+    expires: Just expired_cookie_date,
+    max_age: Just 0,
+  }) resp
 
 #@ Expire a cookie with default options, validating the name.
-pub fun delete_cookie_checked : String -> Response -> Result Response CookieError
+pub fun delete_cookie_checked : String
+  -> Response
+  -> Result Response CookieError
 delete_cookie_checked name resp =
   delete_cookie_with_checked name default_cookie_options resp
 
@@ -166,6 +176,7 @@ pub record CorsConfig {
   allow_origins: List String,
   allow_methods: List Method,
   allow_headers: List String,
+  expose_headers: List String,
   allow_credentials: Bool,
   max_age: Maybe Int,
 }
@@ -178,12 +189,16 @@ default_cors_config = CorsConfig {
   allow_origins: ["*"],
   allow_methods: [GET, POST, PUT, DELETE, PATCH, OPTIONS, HEAD],
   allow_headers: ["Content-Type", "Authorization"],
+  expose_headers: [],
   allow_credentials: False,
   max_age: Nothing,
 }
 
 #@ Wrap an app with CORS response headers and preflight handling.
-pub fun with_cors : CorsConfig -> (Request -> Response needs {..e}) -> Request -> Response
+pub fun with_cors : CorsConfig
+  -> (Request -> Response needs {..e})
+  -> Request
+  -> Response
   needs {..e}
 with_cors config app req =
   if is_cors_preflight req then cors_preflight_response config req
@@ -235,17 +250,16 @@ normalize_cookie_options options = case options.same_site {
 }
 
 fun cookie_header_value : String -> String -> CookieOptions -> String
-cookie_header_value name value options =
-  cookie_encode_component name
-    <> "="
-    <> cookie_encode_component value
-    <> maybe_attr "Path" options.path
-    <> maybe_attr "Domain" options.domain
-    <> expires_attr options.expires
-    <> maybe_int_attr "Max-Age" options.max_age
-    <> bool_attr "HttpOnly" options.http_only
-    <> bool_attr "Secure" options.secure
-    <> same_site_attr options.same_site
+cookie_header_value name value options = cookie_encode_component name
+  <> "="
+  <> cookie_encode_component value
+  <> maybe_attr "Path" options.path
+  <> maybe_attr "Domain" options.domain
+  <> expires_attr options.expires
+  <> maybe_int_attr "Max-Age" options.max_age
+  <> bool_attr "HttpOnly" options.http_only
+  <> bool_attr "Secure" options.secure
+  <> same_site_attr options.same_site
 
 fun cookie_encode_component : String -> String
 cookie_encode_component value =
@@ -257,59 +271,59 @@ cookie_encode_byte byte =
   else percent_encode_byte byte
 
 fun cookie_byte_allowed : Int -> Bool
-cookie_byte_allowed byte =
-  byte == 33
-    || byte >= 35 && byte <= 36
-    || byte >= 38 && byte <= 43
-    || byte >= 45 && byte <= 58
-    || byte >= 60 && byte <= 91
-    || byte >= 93 && byte <= 126
+cookie_byte_allowed byte = byte == 33
+  || byte >= 35 && byte <= 36
+  || byte >= 38 && byte <= 43
+  || byte >= 45 && byte <= 58
+  || byte >= 60 && byte <= 91
+  || byte >= 93 && byte <= 126
 
 fun cookie_name_byte_allowed : Int -> Bool
-cookie_name_byte_allowed byte =
-  byte == 33
-    || byte >= 35 && byte <= 39
-    || byte == 42
-    || byte == 43
-    || byte == 45
-    || byte == 46
-    || byte >= 48 && byte <= 57
-    || byte >= 65 && byte <= 90
-    || byte >= 94 && byte <= 122
-    || byte == 124
-    || byte == 126
+cookie_name_byte_allowed byte = byte == 33
+  || byte >= 35 && byte <= 39
+  || byte == 42
+  || byte == 43
+  || byte == 45
+  || byte == 46
+  || byte >= 48 && byte <= 57
+  || byte >= 65 && byte <= 90
+  || byte >= 94 && byte <= 122
+  || byte == 124
+  || byte == 126
 
 fun percent_encode_byte : Int -> String
-percent_encode_byte byte =
-  "%" <> hex_char (byte / 16) <> hex_char (byte % 16)
+percent_encode_byte byte = "%" <> hex_char (byte / 16) <> hex_char (byte % 16)
 
 fun hex_char : Int -> String
 hex_char digit =
-  if digit < 10 then BitString.to_string_unchecked (BitString.from_byte (48 + digit))
+  if digit
+    < 10 then BitString.to_string_unchecked (BitString.from_byte (48 + digit))
   else BitString.to_string_unchecked (BitString.from_byte (55 + digit))
 
 fun is_cors_preflight : Request -> Bool
-is_cors_preflight req =
-  req.method == OPTIONS
-    && case header "origin" req {
-      Just _ -> case header "access-control-request-method" req {
-        Just _ -> True
-        Nothing -> False
-      }
+is_cors_preflight req = req.method == OPTIONS
+  && case header "origin" req {
+    Just _ -> case header "access-control-request-method" req {
+      Just _ -> True
       Nothing -> False
     }
+    Nothing -> False
+  }
 
 fun cors_preflight_response : CorsConfig -> Request -> Response
-cors_preflight_response config req =
-  no_content
+cors_preflight_response config req = case cors_origin_value config req {
+  Nothing -> no_content
+  Just _ ->
+    no_content
     |> add_cors_origin_headers config req
     |> with_header "Access-Control-Allow-Methods" (cors_methods_header config)
     |> add_cors_allow_headers config req
     |> add_cors_max_age config
+}
 
 fun cors_actual_response : CorsConfig -> Request -> Response -> Response
 cors_actual_response config req resp =
-  resp |> add_cors_origin_headers config req
+  resp |> add_cors_origin_headers config req |> add_cors_expose_headers config
 
 fun add_cors_origin_headers : CorsConfig -> Request -> Response -> Response
 add_cors_origin_headers config req resp = case cors_origin_value config req {
@@ -336,7 +350,8 @@ cors_origin_value config req = case header "origin" req {
 }
 
 fun cors_methods_header : CorsConfig -> String
-cors_methods_header config = String.join ", " (List.map show config.allow_methods)
+cors_methods_header config =
+  String.join ", " (List.map show config.allow_methods)
 
 fun add_cors_allow_headers : CorsConfig -> Request -> Response -> Response
 add_cors_allow_headers config req resp = {
@@ -357,3 +372,8 @@ add_cors_max_age config resp = case config.max_age {
   Just seconds -> with_header "Access-Control-Max-Age" (show seconds) resp
   Nothing -> resp
 }
+
+fun add_cors_expose_headers : CorsConfig -> Response -> Response
+add_cors_expose_headers config resp =
+  if List.is_empty config.expose_headers then resp
+  else with_header "Access-Control-Expose-Headers" (String.join ", " config.expose_headers) resp

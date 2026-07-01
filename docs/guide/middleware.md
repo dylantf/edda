@@ -49,14 +49,17 @@ Edda ships `with_cors` as one of these wraps:
 ```saga
 let cors = { default_cors_config |
   allow_origins: ["https://app.example.com"],
+  allow_methods: [GET, POST],
   allow_credentials: True,
+  expose_headers: ["X-Request-Id"],
 }
 
 with_cors cors app req
 ```
 
 `with_cors` handles preflight `OPTIONS` requests itself and adds
-`Access-Control-*` headers to normal responses.
+`Access-Control-*` headers to normal responses. With credentials enabled and a
+wildcard origin policy, Edda echoes the request origin instead of emitting `*`.
 
 ### Example: panic recovery
 

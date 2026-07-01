@@ -121,12 +121,15 @@ record CorsConfig {
   allow_origins: List String,
   allow_methods: List Method,
   allow_headers: List String,
+  expose_headers: List String,
   allow_credentials: Bool,
   max_age: Maybe Int
 }
 ```
 
 CORS policy for `with_cors`. Use `"*"` in `allow_origins` for wildcard origin.
+When credentials are enabled with wildcard origins, Edda echoes the request
+origin instead of emitting `*`.
 
 ### FormValues
 

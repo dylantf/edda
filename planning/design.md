@@ -568,9 +568,9 @@ with_cors : CorsConfig -> (Request -> Response needs {..e}) -> Request -> Respon
 
 The first version handles preflight `OPTIONS` requests, adds
 `Access-Control-*` headers to normal responses, and keeps policy explicit.
-`CorsConfig` covers origins, methods, headers, credentials, and max age. If
-credentials are enabled with wildcard origins, Edda echoes the request origin
-instead of emitting `*`.
+`CorsConfig` covers origins, methods, request headers, exposed response
+headers, credentials, and max age. If credentials are enabled with wildcard
+origins, Edda echoes the request origin instead of emitting `*`.
 
 ## Endpoint specs and OpenAPI
 
@@ -615,6 +615,22 @@ exists as an assertion-style escape hatch for unusual schemas, but it can lie.
 Currently a linear list matched top-to-bottom (via `choose`). Fine for
 small/medium apps. Could upgrade to a trie of path segments for faster
 lookup and natural prefix grouping. Defer until measured.
+
+### Route miss semantics
+
+Current routing keeps the small `choose` model: if no route handles a request,
+the fallback is `404`. That is enough for first use, but web frameworks usually
+grow a little more protocol polish here:
+
+- `405 Method Not Allowed` when the path matches but the method does not.
+- `Allow` headers listing supported methods for a matched path.
+- Automatic `OPTIONS` responses for matched paths.
+- Automatic `HEAD` behavior for `GET` routes, ideally preserving headers while
+  omitting the response body.
+
+These are easiest to add once route matching can report "path matched but
+method missed" rather than only "handled or skipped". Keep the current simple
+fallthrough semantics until we deliberately introduce that richer match result.
 
 ### Better request IDs
 
@@ -693,6 +709,20 @@ Remaining multipart polish:
   temporary storage, and cleanup semantics. Those probably need streaming
   request body support in `saga_http` before they are pleasant.
 
+### Security helpers
+
+Security policy should stay explicit and composable, mostly as response/request
+helpers or wrap functions rather than router magic. Likely useful slices:
+
+- Signed cookies, built on top of the existing cookie helpers.
+- Secure cookie defaults for session-style cookies.
+- CSRF helpers for form apps.
+- Security headers wrapper for common headers such as HSTS,
+  `X-Content-Type-Options`, and frame policy.
+
+These should be opt-in. Edda should avoid pretending one default security policy
+fits every app.
+
 ### Content negotiation
 
 Core request negotiation helpers now cover the `Accept` and `Accept-Encoding`
@@ -732,6 +762,9 @@ Current coverage:
   accumulated `matches`.
 - `RequestTest`: query/form decoding, cookies, filename sanitizing, quoted
   multipart parameters, file parts, and multipart size limits.
+- `CorsTest`: CORS actual requests, preflight handling, disallowed origins,
+  exposed headers, and credentialed wildcard origin echoing.
+- `SpecTest`: typed `SchemaFor` witnesses render into OpenAPI response schemas.
 
 Use `saga test` for fast regressions and keep browser/demo checks for behavior
 that genuinely needs a running server.

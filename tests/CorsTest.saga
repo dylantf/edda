@@ -1,0 +1,107 @@
+module CorsTest
+
+import Std.Test (Testing, describe, test, assert_eq)
+import Edda (
+  Request,
+  Method,
+  GET,
+  POST,
+  OPTIONS,
+  CorsConfig,
+  default_cors_config,
+  with_cors
+)
+import SagaHttp.Http as Http (Response)
+
+fun req : Method -> String -> Request
+req method path = Request {
+  method: method,
+  path: path,
+  original_path: path,
+  query: Nothing,
+  matches: [],
+  params: [],
+  headers: [],
+  body: Nothing,
+}
+
+fun with_header : String -> String -> Request -> Request
+with_header name value request =
+  { request | headers: request.headers <> [(name, value)] }
+
+fun header : String -> Response -> Maybe String
+header name response = Http.find_header name response.headers
+
+fun app : Request -> Response
+app _ = Http.text 200 "ok"
+
+fun cors_config : CorsConfig
+cors_config = {
+  default_cors_config |
+  allow_origins: ["https://app.example"],
+  allow_methods: [GET, POST],
+  allow_headers: ["Content-Type", "Authorization"],
+  expose_headers: ["X-Request-Id"],
+  max_age: Just 600,
+}
+
+pub fun tests : Unit -> Unit needs {Testing}
+tests () = {
+  describe "CORS" (fun () -> {
+    test "adds CORS headers to allowed actual requests" (fun () -> {
+      let response =
+        req GET "/resource"
+        |> with_header "Origin" "https://app.example"
+        |> with_cors cors_config app
+      assert_eq response.status 200
+      assert_eq (header "access-control-allow-origin" response) (Just "https://app.example")
+      assert_eq (header "vary" response) (Just "Origin")
+      assert_eq (header "access-control-expose-headers" response) (Just "X-Request-Id")
+    })
+
+    test "leaves same-origin style requests alone" (fun () -> {
+      let response = with_cors cors_config app (req GET "/resource")
+      assert_eq response.status 200
+      assert_eq (header "access-control-allow-origin" response) Nothing
+    })
+
+    test "handles allowed preflight requests without calling the app" (fun () -> {
+      let response =
+        req OPTIONS "/resource"
+        |> with_header "Origin" "https://app.example"
+        |> with_header "Access-Control-Request-Method" "POST"
+        |> with_header "Access-Control-Request-Headers" "Content-Type, Authorization"
+        |> with_cors cors_config app
+      assert_eq response.status 204
+      assert_eq (header "access-control-allow-origin" response) (Just "https://app.example")
+      assert_eq (header "access-control-allow-methods" response) (Just "GET, POST")
+      assert_eq (header "access-control-allow-headers" response) (Just "Content-Type, Authorization")
+      assert_eq (header "access-control-max-age" response) (Just "600")
+    })
+
+    test "does not emit CORS headers for disallowed preflight origins" (fun () -> {
+      let response =
+        req OPTIONS "/resource"
+        |> with_header "Origin" "https://evil.example"
+        |> with_header "Access-Control-Request-Method" "POST"
+        |> with_cors cors_config app
+      assert_eq response.status 204
+      assert_eq (header "access-control-allow-origin" response) Nothing
+      assert_eq (header "access-control-allow-methods" response) Nothing
+    })
+
+    test "echoes wildcard origins when credentials are enabled" (fun () -> {
+      let config = {
+        default_cors_config |
+        allow_credentials: True,
+      }
+      let response =
+        req GET "/resource"
+        |> with_header "Origin" "https://app.example"
+        |> with_cors config app
+      assert_eq (header "access-control-allow-origin" response) (Just "https://app.example")
+      assert_eq (header "access-control-allow-credentials" response) (Just "true")
+      assert_eq (header "vary" response) (Just "Origin")
+    })
+  })
+}

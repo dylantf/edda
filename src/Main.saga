@@ -10,7 +10,19 @@ import Demo.JsonApi as JsonApi
 import Demo.Session as Session
 import Demo.SpecRoutes as Spec
 import Demo.TimingMiddleware as Timing
-import Edda (Request, mount, choose, static_dir, to_handler)
+import Edda (
+  Request,
+  GET,
+  POST,
+  OPTIONS,
+  CorsConfig,
+  default_cors_config,
+  with_cors,
+  mount,
+  choose,
+  static_dir,
+  to_handler
+)
 import SagaHttp.Http (
   serve,
   await_shutdown,
@@ -52,6 +64,14 @@ home _ =
       /json/users, /json/users/:id, POST /json/users, POST /json/users/effect
     """
 
+fun json_cors : CorsConfig
+json_cors = {
+  default_cors_config |
+  allow_origins: ["*"],
+  allow_methods: [GET, POST, OPTIONS],
+  allow_headers: ["Content-Type", "Authorization"],
+}
+
 fun app : Request -> Response
 app req =
   choose [
@@ -61,7 +81,7 @@ app req =
     mount "/errors" Errors.app,
     mount "/form" Form.app,
     mount "/session" Session.app,
-    mount "/json" JsonApi.app,
+    mount "/json" (with_cors json_cors JsonApi.app),
     mount "/spec" Spec.app,
     fun r -> home r,
   ] req with {fs}
