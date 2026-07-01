@@ -1,0 +1,52 @@
+module SpecTest
+
+import Std.String as String
+import Std.Test (Testing, describe, test, assert_true)
+import Edda (Request, GET)
+import Edda.Spec (
+  Success,
+  TypedResponse,
+  Schema,
+  SchemaFor,
+  OpenApiInfo,
+  route,
+  responds_success_json,
+  performed_by,
+  text_response,
+  int_schema,
+  string_schema,
+  array_of,
+  to_openapi
+)
+
+record SpecUser {
+  id: Int,
+  name: String,
+} deriving (Debug)
+
+fun spec_user_schema : SchemaFor SpecUser
+spec_user_schema =
+  build Schema SpecUser {
+    id: int_schema,
+    name: string_schema,
+  }
+
+fun list_handler : Request -> TypedResponse (List SpecUser)
+list_handler _ = text_response Success "ok"
+
+pub fun tests : Unit -> Unit needs {Testing}
+tests () = {
+  describe "Edda.Spec" (fun () -> {
+    test "typed schema witnesses render OpenAPI response schemas" (fun () -> {
+      let schema =
+        route GET "/spec-users"
+        |> responds_success_json Success (array_of spec_user_schema) "Users"
+        |> performed_by list_handler
+      let doc = to_openapi (OpenApiInfo { title: "Spec Test", version: "0.1.0" }) [schema]
+      assert_true (String.contains "\"/spec-users\"" doc)
+      assert_true (String.contains "\"type\":\"array\"" doc)
+      assert_true (String.contains "\"id\":{\"type\":\"integer\"}" doc)
+      assert_true (String.contains "\"name\":{\"type\":\"string\"}" doc)
+    })
+  })
+}

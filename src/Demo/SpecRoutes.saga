@@ -13,6 +13,8 @@ import Edda.Spec (
   NotFound,
   TypedResponse,
   RouteSchema,
+  Schema,
+  SchemaFor,
   OpenApiInfo,
   route,
   responds,
@@ -24,20 +26,37 @@ import Edda.Spec (
   text_response,
   plain_text,
   describe,
-  Schema,
+  int_schema,
+  string_schema,
+  array_of,
   to_openapi,
   scalar_handler
 )
 import SagaHttp.Http (Response, ResponseBody)
-import SagaJson.Codec (ToJson)
+import SagaJson.Encode as Encode
+import SagaJson.Encode (ToJson)
 
-# A sample response shape. `Default` provides a synthetic value at call
-# sites (`default : User`); `Schema` is derived too via the generic-walk
-# impls in Edda.Spec — no hand-written schema needed.
+# A sample response shape. JSON encoding and OpenAPI schemas are explicit now:
+# no Generic, derives, or Symbol reflection.
 record User {
   id: Int,
   name: String,
-} deriving (Debug, ToJson, Default, Schema)
+} deriving (Debug)
+
+impl ToJson for User {
+  to_json u =
+    Encode.object [
+      ("id", to_json u.id),
+      ("name", to_json u.name),
+    ]
+}
+
+fun user_schema : SchemaFor User
+user_schema =
+  build Schema User {
+    id: int_schema,
+    name: string_schema,
+  }
 
 fun show_user : Request -> TypedResponse User
 show_user req = case param "id" req {
@@ -51,14 +70,14 @@ list_users _ = ok [User { id: 1, name: "Alice" }, User { id: 2, name: "Bob" }]
 fun list_users_spec : RouteSchema
 list_users_spec =
   route GET "/users"
-  |> responds_success_json Success "All users"
+  |> responds_success_json Success (array_of user_schema) "All users"
   |> performed_by list_users
 
 fun show_user_spec : RouteSchema
 show_user_spec =
   route GET "/users/:id"
   |> path_param "id" "The user's id"
-  |> responds_success_json Success "The user"
+  |> responds_success_json Success user_schema "The user"
   |> responds NotFound (plain_text |> describe "User does not exist")
   |> performed_by show_user
 

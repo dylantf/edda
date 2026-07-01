@@ -7,13 +7,10 @@
 #@ extractors, no runtime overhead on the dispatch path.
 #@
 #@ Status: experimental sidecar. It lives in-tree so it can evolve against real
-#@ Edda internals, but it is not the future primary route API yet. Schema and
-#@ ContentSpec wiring is intentionally deferred; the builder mechanics and
-#@ type-check at `performed_by` are the part worth pinning down first.
+#@ Edda internals, but it is not the future primary route API yet. Schemas are
+#@ explicit `SchemaFor a` witnesses; the builder mechanics and type-check at
+#@ `performed_by` are the part worth pinning down first.
 module Edda.Spec
-
-import Std.Base (KnownSymbol, Proxy)
-import Std.Generic (U1, Leaf, Labeled, And, Record)
 
 import Std.List
 import Std.String
@@ -34,7 +31,7 @@ import Edda as E
 import Edda.Json as EJ
 import SagaHttp.Http (Response, ResponseBody, text)
 import SagaJson (Json)
-import SagaJson.Codec (ToJson)
+import SagaJson.Encode (ToJson)
 import SagaJson.Encode as JE
 
 # ---------------------------------------------------------------------------
@@ -77,7 +74,7 @@ status_code (Other n) = n
 # `choose`. `TypedAction a` is the builder-time shape; the phantom `a`
 # is the handler's success-response body type. It is checked at
 # `performed_by`; only typed metadata helpers such as `responds_success_json`
-# derive spec metadata from that same type.
+# accept spec metadata pinned to that same type.
 # ---------------------------------------------------------------------------
 
 pub type alias Action = Request -> Response
@@ -121,9 +118,9 @@ pub fun no_content : TypedResponse a
 no_content = TypedResponse (text 204 "")
 
 # ---------------------------------------------------------------------------
-# JsonSchema — a small ADT describing the shape of a JSON value. Used by
-# the spec generator to emit OpenAPI schema fragments. Hand-written for
-# now; a `Schema` trait that derives from types is the natural follow-up.
+# JsonSchema — a small ADT describing the shape of a JSON value. The public,
+# typed surface is `SchemaFor a`: a phantom witness tying that schema to the
+# Saga type it describes. Schema values are explicit, not derived.
 # ---------------------------------------------------------------------------
 
 pub type JsonSchema =
@@ -135,122 +132,79 @@ pub type JsonSchema =
   | ObjectSchema (List (String, JsonSchema)) (List String)
   | NullableSchema JsonSchema
 
-# Primitive builders. Constants for the leaf cases.
-pub fun string_schema : JsonSchema
-string_schema = StringSchema
+# A phantom-typed schema witness. The wrapped `JsonSchema` is what OpenAPI
+# emission consumes; the phantom `a` is what route builders type-check against.
+pub type SchemaFor a = SchemaFor JsonSchema
 
-pub fun int_schema : JsonSchema
-int_schema = IntSchema
+# Escape hatch: assert that a raw `JsonSchema` describes `a`. Prefer the typed
+# helpers and `build Schema ...` when they fit; this function can lie.
+pub fun schema_for : JsonSchema -> SchemaFor a
+schema_for schema = SchemaFor schema
 
-pub fun float_schema : JsonSchema
-float_schema = FloatSchema
+# Extract the raw JSON Schema from a typed witness.
+pub fun schema_json : SchemaFor a -> JsonSchema
+schema_json schema = case schema {
+  SchemaFor raw -> raw
+}
 
-pub fun bool_schema : JsonSchema
-bool_schema = BoolSchema
+# Primitive typed schemas.
+pub fun string_schema : SchemaFor String
+string_schema = SchemaFor StringSchema
 
-pub fun array_of : JsonSchema -> JsonSchema
-array_of inner = ArraySchema inner
+pub fun int_schema : SchemaFor Int
+int_schema = SchemaFor IntSchema
 
-# `object_of` takes a flat list of (key, schema). All keys default to
-# required — matching how Saga records work, where every field must be
-# present. Use `optional` to mark a specific key as not required (it
-# falls out of the `required` array in the emitted JSON Schema).
-pub fun object_of : List (String, JsonSchema) -> JsonSchema
-object_of props = ObjectSchema props (List.map (fun (k, _) -> k) props)
+pub fun float_schema : SchemaFor Float
+float_schema = SchemaFor FloatSchema
 
-pub fun optional : String -> JsonSchema -> JsonSchema
-optional field s = case s {
+pub fun bool_schema : SchemaFor Bool
+bool_schema = SchemaFor BoolSchema
+
+pub fun array_of : SchemaFor a -> SchemaFor (List a)
+array_of inner = SchemaFor (ArraySchema (schema_json inner))
+
+pub fun nullable_of : SchemaFor a -> SchemaFor (Maybe a)
+nullable_of inner = SchemaFor (NullableSchema (schema_json inner))
+
+# `object_of` is the raw assertion-oriented constructor. The happy path for
+# records is `build Schema User { ... }`, which type-checks the field schemas
+# against the record constructor.
+pub fun object_of : List (String, JsonSchema) -> SchemaFor a
+object_of props = SchemaFor (ObjectSchema props (List.map (fun (k, _) -> k) props))
+
+pub fun optional : String -> SchemaFor a -> SchemaFor a
+optional field schema = case schema_json schema {
   ObjectSchema props req ->
-    ObjectSchema props (List.filter (fun r -> r != field) req)
-  _ -> s
+    SchemaFor (ObjectSchema props (List.filter (fun r -> r != field) req))
+  _ -> schema
 }
 
-pub fun nullable_of : JsonSchema -> JsonSchema
-nullable_of inner = NullableSchema inner
+pub type Schema = Schema
 
-# ---------------------------------------------------------------------------
-# Schema trait — produces a `JsonSchema` from a value. The value's
-# *contents* don't matter; only its type is read. Callers typically pass
-# `(default : a)` to drive dispatch without constructing a real value by
-# hand:
-#
-#   schema_of (default : User)   #=> ObjectSchema [...]
-#
-# Once Saga gains `deriving (Schema)`, the `impl` boilerplate goes away
-# and only the call site remains.
-# ---------------------------------------------------------------------------
+pub fun schema : Schema
+schema = Schema
 
-pub trait Schema a {
-  fun schema_of : a -> JsonSchema
+pub record builder Schema {
+  start: schema_into,
+  field: schema_field,
 }
 
-impl Schema for Int {
-  schema_of _ = IntSchema
-}
+# Start a typed object schema for a record constructor.
+pub fun schema_into : (a -> b) -> SchemaFor (a -> b)
+schema_into _constructor = SchemaFor (ObjectSchema [] [])
 
-impl Schema for String {
-  schema_of _ = StringSchema
-}
-
-impl Schema for Float {
-  schema_of _ = FloatSchema
-}
-
-impl Schema for Bool {
-  schema_of _ = BoolSchema
-}
-
-# `Maybe a` and `List a` need a sample of the inner type to recurse
-# through. `Default` gives us that without forcing the caller to
-# construct one.
-impl Schema for Maybe a where {a: Schema, a: Default} {
-  schema_of _ = NullableSchema (schema_of (default : a))
-}
-
-impl Schema for List a where {a: Schema, a: Default} {
-  schema_of _ = ArraySchema (schema_of (default : a))
-}
-
-# Generic-walk impls: these are what make `deriving (Schema)` work.
-# Records flatten into `Record (And (Labeled 'f1 (Leaf T1)) (Labeled 'f2 ...))`
-# trees; the impls below walk that tree and produce a fused ObjectSchema.
-
-impl Schema for U1 {
-  schema_of U1 = ObjectSchema [] []
-}
-
-impl Schema for Leaf a where {a: Schema} {
-  schema_of (Leaf x) = schema_of x
-}
-
-# A labeled field becomes a single-entry ObjectSchema. The Symbol's
-# source name is reflected via KnownSymbol; the inner schema falls out
-# of recursion.
-impl Schema for Labeled (n : Symbol) a where {n: KnownSymbol, a: Schema} {
-  schema_of (Labeled v) = {
-    let name = symbol_name (Proxy : Proxy n)
-    ObjectSchema [(name, schema_of v)] [name]
-  }
-}
-
-# Two adjacent fields combine into one ObjectSchema by merging
-# properties and required lists.
-impl Schema for And l r where {l: Schema, r: Schema} {
-  schema_of (And l r) = {
-    let l_schema = schema_of l
-    let r_schema = schema_of r
-    case (l_schema, r_schema) {
-      (ObjectSchema lp lr, ObjectSchema rp rr) ->
-        ObjectSchema (lp <> rp) (lr <> rr)
-      _ -> l_schema
-    }
-  }
-}
-
-# The Record wrapper carries the user-facing type name (ignored here)
-# and delegates to the inner field tree.
-impl Schema for Record a where {a: Schema} {
-  schema_of (Record _ inner) = schema_of inner
+# Add a field schema to a typed object schema. This is the primitive used by:
+#   build Schema User { id: int_schema, name: string_schema }
+pub fun schema_field : String
+  -> SchemaFor a
+  -> SchemaFor (a -> b)
+  -> SchemaFor b
+schema_field name field object = case schema_json object {
+  ObjectSchema props required ->
+    SchemaFor (ObjectSchema (
+      List.append props [(name, schema_json field)]
+    ) (List.append required [name]))
+  _ -> schema_for (schema_json object)
 }
 
 # ---------------------------------------------------------------------------
@@ -265,10 +219,10 @@ pub record ContentSpec {
   description: Maybe String,
 }
 
-pub fun json_of : JsonSchema -> ContentSpec
+pub fun json_of : SchemaFor a -> ContentSpec
 json_of s = ContentSpec {
   content_type: "application/json",
-  schema: Just s,
+  schema: Just (schema_json s),
   description: Nothing,
 }
 
@@ -332,7 +286,7 @@ pub record RouteSchema {
 # type must match.
 #
 # Plain metadata combinators stay loose. Typed metadata helpers can opt into
-# stronger coupling by deriving schemas from the same phantom `a` that the
+# stronger coupling by accepting schemas for the same phantom `a` that the
 # handler later has to return.
 # ---------------------------------------------------------------------------
 
@@ -362,13 +316,13 @@ path_param name desc b =
   { b | params: ParamMeta { name: name, description: desc } :: b.params }
 
 # Document a JSON request body with the given schema and description.
-pub fun json_body : JsonSchema -> String -> RouteBuilder a -> RouteBuilder a
+pub fun json_body : SchemaFor body -> String -> RouteBuilder a -> RouteBuilder a
 json_body schema desc b =
   { b |
     body: Just (BodyMeta {
       content_type: "application/json",
       description: desc,
-      schema: Just schema,
+      schema: Just (schema_json schema),
     }),
   }
 
@@ -389,17 +343,20 @@ responds status spec b =
   }
 
 # Declare the JSON response for the builder's success type. Unlike plain
-# `responds`, this derives the schema from the same phantom `a` that
-# `performed_by` later checks against the handler's `TypedResponse a`.
-pub fun responds_success_json : Status -> String -> RouteBuilder a -> RouteBuilder a
-  where {a: Schema, a: Default}
-responds_success_json status desc b =
-  responds status (json_of (schema_of (default : a)) |> describe desc) b
+# `responds`, this receives a `SchemaFor a`, so `performed_by` later checks the
+# same `a` against the handler's `TypedResponse a`.
+pub fun responds_success_json : Status
+  -> SchemaFor a
+  -> String
+  -> RouteBuilder a
+  -> RouteBuilder a
+responds_success_json status schema desc b =
+  responds status (json_of schema |> describe desc) b
 
 # Terminal step: collapse the builder into a RouteSchema by attaching
 # the action. The compiler unifies the action's return type with the
-# builder's phantom `a`. If typed metadata helpers derived schemas from that
-# phantom, the documented success schema and handler return type stay in sync.
+# builder's phantom `a`. If typed metadata helpers received `SchemaFor a`, the
+# documented success schema and handler return type stay in sync.
 pub fun performed_by : (Request -> TypedResponse a) -> RouteBuilder a -> RouteSchema
 performed_by typed_action b = RouteSchema {
   method: b.method,

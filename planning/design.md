@@ -588,10 +588,25 @@ path.
 
 The typed response promise should stay honest. Plain `responds` is metadata
 only; it records a status/content pair but does not prove the handler returns
-that shape. Typed helpers such as `responds_success_json` derive the success
-schema from the same builder phantom that `performed_by` unifies with the
+that shape. Typed helpers such as `responds_success_json` now take an explicit
+`SchemaFor a` witness, and `performed_by` unifies that same `a` with the
 handler's `TypedResponse a`, so that specific path keeps schema and handler
 return type coupled.
+
+Schemas are explicit now that Saga no longer has `Generic`, user-defined
+derives, fundeps, or `Symbol`. The preferred object path mirrors Kraken's typed
+record builders:
+
+```saga
+fun user_schema : SchemaFor User
+user_schema =
+  build Schema User { id: int_schema, name: string_schema }
+```
+
+This checks field count and field types against the record constructor. It does
+not prove that a hand-written `ToJson` impl emits the exact same wire shape, so
+that remains a documentation/testing concern. `schema_for raw_json_schema`
+exists as an assertion-style escape hatch for unusual schemas, but it can lie.
 
 ## Open questions
 
