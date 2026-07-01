@@ -201,9 +201,27 @@ pub record FormValues {
   entries: List (String, String),
 }
 
+#@ Size policy for URL-encoded query and form parsing.
+#@ `Nothing` means no Edda-level limit for that dimension.
+pub record UrlEncodedOptions {
+  max_total_bytes: Maybe Int,
+  max_field_count: Maybe Int,
+  max_field_name_bytes: Maybe Int,
+  max_field_value_bytes: Maybe Int,
+}
+
 #@ Empty form values.
 pub fun empty_form_values : FormValues
 empty_form_values = FormValues { entries: [] }
+
+#@ Default URL-encoded parsing policy.
+pub fun default_urlencoded_options : UrlEncodedOptions
+default_urlencoded_options = UrlEncodedOptions {
+  max_total_bytes: Just 65536,
+  max_field_count: Just 1024,
+  max_field_name_bytes: Just 1024,
+  max_field_value_bytes: Just 16384,
+}
 
 #@ Build form values from ordered entries.
 pub fun form_values_from_entries : List (String, String) -> FormValues
@@ -269,18 +287,46 @@ pub record MultipartOptions {
   max_file_bytes: Maybe Int,
 }
 
+#@ App-level parser policy used by the ambient request parser effect.
+pub record RequestParserOptions {
+  urlencoded: UrlEncodedOptions,
+  multipart: MultipartOptions,
+}
+
+#@ Ambient request parser configuration.
+pub effect RequestParserConfig {
+  fun request_parser_options : Unit -> RequestParserOptions
+}
+
 #@ Empty multipart form values.
 pub fun empty_multipart_form_values : MultipartFormValues
 empty_multipart_form_values = MultipartFormValues { entries: [] }
 
-#@ Default multipart parsing policy: no Edda-level size limits.
+#@ Default multipart parsing policy.
 pub fun default_multipart_options : MultipartOptions
 default_multipart_options = MultipartOptions {
-  max_total_bytes: Nothing,
-  max_part_count: Nothing,
-  max_part_bytes: Nothing,
-  max_text_bytes: Nothing,
-  max_file_bytes: Nothing,
+  max_total_bytes: Just 10485760,
+  max_part_count: Just 1000,
+  max_part_bytes: Just 10485760,
+  max_text_bytes: Just 65536,
+  max_file_bytes: Just 10485760,
+}
+
+#@ Default app-level request parser policy.
+pub fun default_request_parser_options : RequestParserOptions
+default_request_parser_options = RequestParserOptions {
+  urlencoded: default_urlencoded_options,
+  multipart: default_multipart_options,
+}
+
+#@ Install request parser options for an app or sub-app.
+pub fun with_request_parser_options : RequestParserOptions
+  -> (Request -> Response needs {RequestParserConfig, ..e})
+  -> Request
+  -> Response
+  needs {..e}
+with_request_parser_options options app req = app req with {
+  request_parser_options () = resume options
 }
 
 #@ Build multipart form values from ordered entries.
@@ -338,6 +384,10 @@ sanitize_filename filename =
 pub type UrlEncodedError =
   | InvalidPercentEscape String
   | InvalidUrlEncodedUtf8
+  | UrlEncodedTotalTooLarge Int Int
+  | UrlEncodedFieldCountTooLarge Int Int
+  | UrlEncodedFieldNameTooLarge String Int Int
+  | UrlEncodedFieldValueTooLarge String Int Int
   deriving (Debug, Eq)
 
 #@ Errors from `application/x-www-form-urlencoded` request parsing.
@@ -369,23 +419,53 @@ pub type MultipartError =
 
 #@ Decode the request query string as URL-encoded form values.
 pub fun query_values : Request -> Result FormValues UrlEncodedError
-query_values req = case req.query {
-  Just q -> parse_urlencoded q
+  needs {RequestParserConfig}
+query_values req = {
+  let options = request_parser_options! ()
+  query_values_with options.urlencoded req
+}
+
+#@ Decode the request query string with explicit URL-encoded parser limits.
+pub fun query_values_with : UrlEncodedOptions
+  -> Request
+  -> Result FormValues UrlEncodedError
+query_values_with options req = case req.query {
+  Just q -> parse_urlencoded_with options q
   Nothing -> Ok empty_form_values
 }
 
 #@ Decode and return the first query value for `name`.
 pub fun query_value : String -> Request -> Result (Maybe String) UrlEncodedError
+  needs {RequestParserConfig}
 query_value name req = case query_values req {
+  Ok values -> Ok (form_get name values)
+  Err e -> Err e
+}
+
+#@ Decode and return the first query value for `name` with explicit limits.
+pub fun query_value_with : UrlEncodedOptions
+  -> String
+  -> Request
+  -> Result (Maybe String) UrlEncodedError
+query_value_with options name req = case query_values_with options req {
   Ok values -> Ok (form_get name values)
   Err e -> Err e
 }
 
 #@ Decode an `application/x-www-form-urlencoded` request body.
 pub fun form_values : Request -> Result FormValues FormError
-form_values req = case require_content_type "application/x-www-form-urlencoded" req {
+  needs {RequestParserConfig}
+form_values req = {
+  let options = request_parser_options! ()
+  form_values_with options.urlencoded req
+}
+
+#@ Decode an `application/x-www-form-urlencoded` request body with explicit
+#@ URL-encoded parser limits.
+pub fun form_values_with : UrlEncodedOptions -> Request -> Result FormValues FormError
+form_values_with options req = case require_content_type "application/x-www-form-urlencoded" req {
   Ok _ -> case body_text req {
-    Ok body -> case parse_urlencoded body {
+    Ok body -> case parse_urlencoded_with options body {
       Ok values -> Ok values
       Err e -> Err (FormUrlEncodedError e)
     }
@@ -398,14 +478,29 @@ form_values req = case require_content_type "application/x-www-form-urlencoded" 
 
 #@ Decode and return the first form body value for `name`.
 pub fun form_value : String -> Request -> Result (Maybe String) FormError
+  needs {RequestParserConfig}
 form_value name req = case form_values req {
+  Ok values -> Ok (form_get name values)
+  Err e -> Err e
+}
+
+#@ Decode and return the first form body value for `name` with explicit limits.
+pub fun form_value_with : UrlEncodedOptions
+  -> String
+  -> Request
+  -> Result (Maybe String) FormError
+form_value_with options name req = case form_values_with options req {
   Ok values -> Ok (form_get name values)
   Err e -> Err e
 }
 
 #@ Decode a buffered `multipart/form-data` request body.
 pub fun multipart_values : Request -> Result MultipartFormValues MultipartError
-multipart_values req = multipart_values_with default_multipart_options req
+  needs {RequestParserConfig}
+multipart_values req = {
+  let options = request_parser_options! ()
+  multipart_values_with options.multipart req
+}
 
 #@ Decode a buffered `multipart/form-data` request body with explicit size
 #@ limits.
@@ -438,6 +533,7 @@ multipart_values_with options req = case header "content-type" req {
 pub fun multipart_value : String
   -> Request
   -> Result (Maybe MultipartValue) MultipartError
+  needs {RequestParserConfig}
 multipart_value name req = case multipart_values req {
   Ok values -> Ok (multipart_get name values)
   Err e -> Err e
@@ -1044,11 +1140,49 @@ parse_query_pair part =
     Just (name, value)
   }
 
-fun parse_urlencoded : String -> Result FormValues UrlEncodedError
-parse_urlencoded input = case decode_urlencoded_pairs (String.split "&" input) [] {
-  Ok entries -> Ok (FormValues { entries: List.reverse entries })
-  Err e -> Err e
+fun parse_urlencoded_with : UrlEncodedOptions
+  -> String
+  -> Result FormValues UrlEncodedError
+parse_urlencoded_with options input = case check_limit options.max_total_bytes (string_byte_size input) {
+  Ok _ -> case decode_urlencoded_pairs (String.split "&" input) [] {
+    Ok entries -> {
+      let decoded = List.reverse entries
+      case validate_urlencoded_entries options decoded {
+        Ok _ -> Ok (FormValues { entries: decoded })
+        Err e -> Err e
+      }
+    }
+    Err e -> Err e
+  }
+  Err (limit, actual) -> Err (UrlEncodedTotalTooLarge limit actual)
 }
+
+fun validate_urlencoded_entries : UrlEncodedOptions
+  -> List (String, String)
+  -> Result Unit UrlEncodedError
+validate_urlencoded_entries options entries = case check_limit options.max_field_count (List.length entries) {
+  Ok _ -> validate_urlencoded_fields options entries
+  Err (limit, actual) -> Err (UrlEncodedFieldCountTooLarge limit actual)
+}
+
+fun validate_urlencoded_fields : UrlEncodedOptions
+  -> List (String, String)
+  -> Result Unit UrlEncodedError
+validate_urlencoded_fields options entries = case entries {
+  [] -> Ok ()
+  (name, value) :: rest -> case check_limit options.max_field_name_bytes (string_byte_size name) {
+    Ok _ -> case check_limit options.max_field_value_bytes (string_byte_size value) {
+      Ok _ -> validate_urlencoded_fields options rest
+      Err (limit, actual) ->
+        Err (UrlEncodedFieldValueTooLarge name limit actual)
+    }
+    Err (limit, actual) ->
+      Err (UrlEncodedFieldNameTooLarge name limit actual)
+  }
+}
+
+fun string_byte_size : String -> Int
+string_byte_size value = BitString.size (BitString.from_string value)
 
 fun decode_urlencoded_pairs : List String
   -> List (String, String)

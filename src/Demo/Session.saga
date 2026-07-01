@@ -17,7 +17,8 @@ import Edda (
   set_cookie_with,
   delete_cookie_with,
   default_cookie_options,
-  CookieOptions
+  CookieOptions,
+  RequestParserConfig
 )
 import SagaHttp.Http (Response)
 
@@ -120,7 +121,7 @@ show_secret req = case cookie session_cookie_name req {
   Nothing -> redirect 303 "/session"
 }
 
-fun login : Request -> Response
+fun login : Request -> Response needs {RequestParserConfig}
 login req = case form_value "username" req {
   Ok (Just username) ->
     redirect 303 "/session"
@@ -134,7 +135,7 @@ logout _ =
   redirect 303 "/session"
   |> delete_cookie_with session_cookie_name session_cookie_options
 
-pub fun app : Request -> Response
+pub fun app : Request -> Response needs {RequestParserConfig}
 app req =
   choose [
     route GET "/" show_session,

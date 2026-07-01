@@ -174,6 +174,20 @@ record MultipartFormValues {
 
 Decoded multipart form values. Preserves insertion order and duplicates.
 
+### UrlEncodedOptions
+
+```saga
+record UrlEncodedOptions {
+  max_total_bytes: Maybe Int,
+  max_field_count: Maybe Int,
+  max_field_name_bytes: Maybe Int,
+  max_field_value_bytes: Maybe Int
+}
+```
+
+Size policy for URL-encoded query and form parsing. `Nothing` means no
+Edda-level limit for that dimension.
+
 ### MultipartOptions
 
 ```saga
@@ -189,12 +203,27 @@ record MultipartOptions {
 Size policy for buffered multipart parsing. `Nothing` means no Edda-level limit
 for that dimension.
 
+### RequestParserOptions
+
+```saga
+record RequestParserOptions {
+  urlencoded: UrlEncodedOptions,
+  multipart: MultipartOptions
+}
+```
+
+App-level parser policy used by the ambient request parser effect.
+
 ### UrlEncodedError
 
 ```saga
 type UrlEncodedError =
   | InvalidPercentEscape String
   | InvalidUrlEncodedUtf8
+  | UrlEncodedTotalTooLarge Int Int
+  | UrlEncodedFieldCountTooLarge Int Int
+  | UrlEncodedFieldNameTooLarge String Int Int
+  | UrlEncodedFieldValueTooLarge String Int Int
 ```
 
 Errors from URL-encoded query/form decoding.
@@ -281,6 +310,16 @@ effect Skip {
 }
 ```
 
+### RequestParserConfig
+
+```saga
+effect RequestParserConfig {
+  fun request_parser_options : Unit -> RequestParserOptions
+}
+```
+
+Ambient request parser configuration.
+
 ## Values
 
 ### not_found
@@ -321,6 +360,15 @@ fun empty_form_values : FormValues
 
 Empty form values.
 
+### default_urlencoded_options
+
+```saga
+fun default_urlencoded_options : UrlEncodedOptions
+```
+
+Default URL-encoded parsing policy: 64 KiB total input, 1024 fields, 1024-byte
+field names, and 16 KiB field values.
+
 ### empty_multipart_form_values
 
 ```saga
@@ -335,7 +383,16 @@ Empty multipart form values.
 fun default_multipart_options : MultipartOptions
 ```
 
-Default multipart parsing policy: no Edda-level size limits.
+Default multipart parsing policy: 10 MiB total input/part/file, 1000 parts,
+and 64 KiB text parts.
+
+### default_request_parser_options
+
+```saga
+fun default_request_parser_options : RequestParserOptions
+```
+
+Default app-level request parser policy.
 
 ## Functions
 
@@ -447,19 +504,35 @@ Look up the first query parameter value by name.
 ### query_values
 
 ```saga
-fun query_values : Request -> Result FormValues UrlEncodedError
+fun query_values : Request -> Result FormValues UrlEncodedError needs {RequestParserConfig}
 ```
 
 Decode the request query string as URL-encoded form values. `+` decodes to a
-space and `%XX` escapes decode as UTF-8 bytes.
+space and `%XX` escapes decode as UTF-8 bytes. Uses the ambient parser policy.
+
+### query_values_with
+
+```saga
+fun query_values_with : UrlEncodedOptions -> Request -> Result FormValues UrlEncodedError
+```
+
+Decode the request query string with explicit URL-encoded parser limits.
 
 ### query_value
 
 ```saga
-fun query_value : String -> Request -> Result (Maybe String) UrlEncodedError
+fun query_value : String -> Request -> Result (Maybe String) UrlEncodedError needs {RequestParserConfig}
 ```
 
 Decode and return the first query value for `name`.
+
+### query_value_with
+
+```saga
+fun query_value_with : UrlEncodedOptions -> String -> Request -> Result (Maybe String) UrlEncodedError
+```
+
+Decode and return the first query value for `name` with explicit limits.
 
 ### cookies
 
@@ -546,26 +619,45 @@ Delete all values for `name`.
 ### form_values
 
 ```saga
-fun form_values : Request -> Result FormValues FormError
+fun form_values : Request -> Result FormValues FormError needs {RequestParserConfig}
 ```
 
-Decode an `application/x-www-form-urlencoded` request body.
+Decode an `application/x-www-form-urlencoded` request body using the ambient
+parser policy.
+
+### form_values_with
+
+```saga
+fun form_values_with : UrlEncodedOptions -> Request -> Result FormValues FormError
+```
+
+Decode an `application/x-www-form-urlencoded` request body with explicit
+URL-encoded parser limits.
 
 ### form_value
 
 ```saga
-fun form_value : String -> Request -> Result (Maybe String) FormError
+fun form_value : String -> Request -> Result (Maybe String) FormError needs {RequestParserConfig}
 ```
 
 Decode and return the first form body value for `name`.
 
+### form_value_with
+
+```saga
+fun form_value_with : UrlEncodedOptions -> String -> Request -> Result (Maybe String) FormError
+```
+
+Decode and return the first form body value for `name` with explicit limits.
+
 ### multipart_values
 
 ```saga
-fun multipart_values : Request -> Result MultipartFormValues MultipartError
+fun multipart_values : Request -> Result MultipartFormValues MultipartError needs {RequestParserConfig}
 ```
 
-Decode a buffered `multipart/form-data` request body.
+Decode a buffered `multipart/form-data` request body using the ambient parser
+policy.
 
 ### multipart_values_with
 
@@ -578,7 +670,7 @@ Decode a buffered `multipart/form-data` request body with explicit size limits.
 ### multipart_value
 
 ```saga
-fun multipart_value : String -> Request -> Result (Maybe MultipartValue) MultipartError
+fun multipart_value : String -> Request -> Result (Maybe MultipartValue) MultipartError needs {RequestParserConfig}
 ```
 
 Decode and return the first multipart value for `name`.
@@ -890,11 +982,19 @@ If no inner route matches, the group skips so the outer `choose` can continue.
 ### mount
 
 ```saga
-fun mount : String -> (Request -> Response) -> Request -> Response needs {Skip}
+fun mount : String -> (Request -> Response needs {..e}) -> Request -> Response needs {Skip, ..e}
 ```
 
-Mount a sub-app whose effects are already handled. Captured `:name`
-params accumulate and are visible to the sub-app.
+Mount a sub-app at a prefix. Captured `:name` params accumulate and are visible
+to the sub-app.
+
+### with_request_parser_options
+
+```saga
+fun with_request_parser_options : RequestParserOptions -> (Request -> Response needs {RequestParserConfig, ..e}) -> Request -> Response needs {..e}
+```
+
+Install request parser options for an app or sub-app.
 
 ### from_http
 

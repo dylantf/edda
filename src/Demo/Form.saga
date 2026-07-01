@@ -21,7 +21,8 @@ import Edda (
   sanitize_filename,
   FormValues,
   FormError,
-  MultipartError
+  MultipartError,
+  RequestParserConfig
 )
 import SagaHttp.Http (Response)
 
@@ -88,7 +89,7 @@ error_message err = debug err
 fun multipart_error_message : MultipartError -> String
 multipart_error_message err = debug err
 
-fun submit_form : Request -> Response needs {Stdio}
+fun submit_form : Request -> Response needs {Stdio, RequestParserConfig}
 submit_form req = case form_values req {
   Ok values -> {
     let rendered = render_values values
@@ -169,7 +170,7 @@ render_upload_result caption filename safe_filename content_type = "caption = "
   <> "\ncontent_type = "
   <> content_type
 
-fun submit_multipart : Request -> Response needs {Stdio}
+fun submit_multipart : Request -> Response needs {Stdio, RequestParserConfig}
 submit_multipart req = case multipart_values req {
   Ok values -> {
     let caption = case multipart_text "caption" values {
@@ -228,7 +229,7 @@ submit_multipart req = case multipart_values req {
   }
 }
 
-pub fun app : Request -> Response
+pub fun app : Request -> Response needs {RequestParserConfig}
 app req = {
   req
   |> choose [

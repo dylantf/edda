@@ -210,13 +210,16 @@ group prefix routes req = {
 }
 
 # ---------------------------------------------------------------------------
-# mount — attach a fully-discharged sub-app at a prefix.
+# mount — attach a sub-app at a prefix.
 # ---------------------------------------------------------------------------
 
-#@ Mount a sub-app whose effects are already handled. Captured `:name`
-#@ params accumulate and are visible to the sub-app.
-pub fun mount : String -> (Request -> Response) -> Request -> Response
-  needs {Skip}
+#@ Mount a sub-app at a prefix. Captured `:name` params accumulate and are
+#@ visible to the sub-app.
+pub fun mount : String
+  -> (Request -> Response needs {..e})
+  -> Request
+  -> Response
+  needs {Skip, ..e}
 mount prefix app req = {
   let prefix_segs = path_segments prefix
   let path_segs = path_segments req.path

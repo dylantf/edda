@@ -21,7 +21,10 @@ import Edda (
   mount,
   choose,
   static_dir,
-  to_handler
+  to_handler,
+  default_request_parser_options,
+  with_request_parser_options,
+  RequestParserConfig
 )
 import SagaHttp.Http (
   serve,
@@ -72,8 +75,8 @@ json_cors = {
   allow_headers: ["Content-Type", "Authorization"],
 }
 
-fun app : Request -> Response
-app req =
+fun app_routes : Request -> Response needs {RequestParserConfig}
+app_routes req =
   choose [
     static_dir "/static" "src/static",
     mount "/timing" Timing.app,
@@ -85,6 +88,9 @@ app req =
     mount "/spec" Spec.app,
     fun r -> home r,
   ] req with {fs}
+
+fun app : Request -> Response
+app req = with_request_parser_options default_request_parser_options app_routes req
 
 main () = {
   let cfg = { default_config | port: 8080 }

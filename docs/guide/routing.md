@@ -115,7 +115,9 @@ case query_values req {
 `query_values` returns `FormValues`, the same text-only value container used by
 `application/x-www-form-urlencoded` bodies. `multipart_values` returns
 `MultipartFormValues`, whose values can be text or buffered files with per-part
-headers.
+headers. The decoded helpers read parser limits from `RequestParserConfig`;
+install app-wide defaults with `with_request_parser_options`, or use the
+`*_with` helpers for explicit route-local parser options.
 
 ## `group`: inline nesting
 
@@ -155,10 +157,9 @@ wants to understand which nested patterns handled a request.
 
 ## `mount`: attach a sub-app
 
-`mount` attaches an already-pure `Request -> Response` at a prefix.
-Use it when a sub-app has its own effect stack that should stay
-encapsulated — typically because it lives in its own module and
-discharges its own handlers internally.
+`mount` attaches a sub-app at a prefix. Use it when a sub-app should live in
+its own module, own its inner routing behavior, and either inherit the root
+effect stack or discharge its own handlers internally.
 
 ```saga
 mount "/admin" admin_app
@@ -170,17 +171,17 @@ A mounted sub-app sees the path with the prefix stripped. Inside
 "/users"`. The unmodified path stays available as `req.original_path`
 for things like logging.
 
-Unlike `group`, a mounted app is already a complete `Request -> Response`
-application. If it matches the prefix, its own routing and 404 behavior own the
-request.
+Unlike `group`, a mounted app is a complete sub-application. If it matches the
+prefix, its own routing and 404 behavior own the request.
 
 ### When to use which
 
 - **`group`** when sub-routes need the parent's effects and should
   stay in the same file. Inner misses fall through to later outer routes.
-- **`mount`** when a sub-app is its own thing — different effect
-  stack, its own module, its own tests. Real-world example: a public
-  API and an admin API that need different DB pools.
+- **`mount`** when a sub-app is its own thing — shared root effects,
+  a different internal effect stack, its own module, its own tests. Real-world
+  example: a public API and an admin API that share request parser policy but
+  need different DB pools.
 
 ## Where the prefix goes
 

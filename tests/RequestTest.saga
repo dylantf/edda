@@ -10,16 +10,23 @@ import Edda (
   EncodingRange,
   MultipartFileTooLarge,
   MultipartText,
+  UrlEncodedFieldValueTooLarge,
+  UrlEncodedTotalTooLarge,
   accept_encoding_ranges,
   accept_ranges,
   accepts_encoding,
   accepts,
   default_multipart_options,
+  default_request_parser_options,
+  default_urlencoded_options,
   form_entries,
   form_values,
+  form_values_with,
   form_get,
   form_get_all,
+  FormUrlEncodedError,
   query_values,
+  query_values_with,
   cookies,
   cookie,
   multipart_values,
@@ -28,6 +35,7 @@ import Edda (
   multipart_file,
   preferred_content_encoding,
   preferred_content_type,
+  RequestParserConfig,
   sanitize_filename
 )
 
@@ -72,11 +80,19 @@ multipart_body = "--abc\r\n"
   <> "bytes\r\n"
   <> "--abc--"
 
+fun with_default_parser_options : (Unit -> a needs {RequestParserConfig}) -> a
+with_default_parser_options run = run () with {
+  request_parser_options () = resume default_request_parser_options
+}
+
 pub fun tests : Unit -> Unit needs {Testing}
 tests () = {
   describe "Request helpers" (fun () -> {
     test "query_values decodes urlencoded values and preserves duplicates" (fun () -> {
-      let result = query_values (req POST "/search" |> with_query "q=hello+world&tag=a&tag=b%21")
+      let request =
+        req POST "/search"
+          |> with_query "q=hello+world&tag=a&tag=b%21"
+      let result = with_default_parser_options (fun () -> query_values request)
       case result {
         Ok values -> {
           assert_eq (form_entries values) [
@@ -96,12 +112,59 @@ tests () = {
         req POST "/form"
           |> with_header "Content-Type" "application/x-www-form-urlencoded; charset=utf-8"
           |> with_body "name=Alice+Smith&tags=demo&tags=forms"
-      case form_values request {
+      case with_default_parser_options (fun () -> form_values request) {
         Ok values -> {
           assert_eq (form_get "name" values) (Just "Alice Smith")
           assert_eq (form_get_all "tags" values) ["demo", "forms"]
         }
         Err _ -> assert_eq True False
+      }
+    })
+
+    test "query_values_with enforces total byte limits" (fun () -> {
+      let options = { default_urlencoded_options | max_total_bytes: Just 3 }
+      let result = query_values_with options (req POST "/search" |> with_query "name=alice")
+      case result {
+        Err (UrlEncodedTotalTooLarge limit actual) -> {
+          assert_eq limit 3
+          assert_eq actual 10
+        }
+        _ -> assert_eq True False
+      }
+    })
+
+    test "query_values reads ambient parser options" (fun () -> {
+      let options = {
+        default_request_parser_options |
+        urlencoded: { default_urlencoded_options | max_total_bytes: Just 3 },
+      }
+      let request = req POST "/search" |> with_query "name=alice"
+      let result = query_values request with {
+        request_parser_options () = resume options
+      }
+      case result {
+        Err (UrlEncodedTotalTooLarge limit actual) -> {
+          assert_eq limit 3
+          assert_eq actual 10
+        }
+        _ -> assert_eq True False
+      }
+    })
+
+    test "form_values_with enforces decoded field value byte limits" (fun () -> {
+      let options = { default_urlencoded_options | max_field_value_bytes: Just 4 }
+      let request =
+        req POST "/form"
+          |> with_header "Content-Type" "application/x-www-form-urlencoded"
+          |> with_body "name=Alice"
+      let result = form_values_with options request
+      case result {
+        Err (FormUrlEncodedError (UrlEncodedFieldValueTooLarge name limit actual)) -> {
+          assert_eq name "name"
+          assert_eq limit 4
+          assert_eq actual 5
+        }
+        _ -> assert_eq True False
       }
     })
 
@@ -225,7 +288,8 @@ tests () = {
     })
 
     test "multipart_values parses quoted parameters and file parts" (fun () -> {
-      case multipart_values (multipart_req multipart_body) {
+      let result = with_default_parser_options (fun () -> multipart_values (multipart_req multipart_body))
+      case result {
         Ok values -> {
           case multipart_get "caption" values {
             Just (MultipartText value) -> assert_eq value "hello"

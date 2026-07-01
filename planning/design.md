@@ -83,8 +83,8 @@ header        : String -> Request -> Maybe String
 header_values : String -> Request -> List String
 query_params  : Request -> List (String, String)
 query_param   : String -> Request -> Maybe String
-query_values  : Request -> Result FormValues UrlEncodedError
-query_value   : String -> Request -> Result (Maybe String) UrlEncodedError
+query_values  : Request -> Result FormValues UrlEncodedError needs {RequestParserConfig}
+query_value   : String -> Request -> Result (Maybe String) UrlEncodedError needs {RequestParserConfig}
 cookies       : Request -> List (String, String)
 cookie        : String -> Request -> Maybe String
 ```
@@ -195,13 +195,13 @@ If the prefix matches but no sub-route matches, `group` skips so the
 outer `choose` can keep trying later routes. It is prefix composition,
 not namespace ownership.
 
-**`mount`** — attach a fully-discharged sub-app at a prefix. Useful when
-a sub-app uses a different handler stack (admin DB pool, mock auth in
-tests) or is its own module.
+**`mount`** — attach a sub-app at a prefix. Useful when a sub-app uses a
+different handler stack (admin DB pool, mock auth in tests), inherits a shared
+root handler stack, or is its own module.
 
 ```saga
-fun mount : String -> (Request -> Response)
-         -> Request -> Response needs {Skip}
+fun mount : String -> (Request -> Response needs {..e})
+         -> Request -> Response needs {Skip, ..e}
 
 fun admin_app : Request -> Response
 admin_app req = (choose [...]) req with { admin_db, log, audit }
@@ -542,14 +542,19 @@ Core request body helpers now available:
 - `body_bytes : Request -> Result BitString RequestBodyError`.
 - `body_text : Request -> Result String RequestBodyError`.
 - `require_content_type : String -> Request -> Result Unit ContentTypeError`.
-- `form_values : Request -> Result FormValues FormError` for
-  `application/x-www-form-urlencoded`.
-- `form_value : String -> Request -> Result (Maybe String) FormError`.
-- `multipart_values : Request -> Result MultipartFormValues MultipartError`
-  for buffered `multipart/form-data` bodies.
+- `form_values : Request -> Result FormValues FormError needs {RequestParserConfig}`
+  for `application/x-www-form-urlencoded` using ambient parser options.
+- `form_values_with : UrlEncodedOptions -> Request -> Result FormValues FormError`
+  for explicit URL-encoded max total bytes, field count, field-name bytes, and
+  field-value bytes. `query_values_with` and `query_value_with` use the same
+  options record for decoded query strings.
+- `form_value : String -> Request -> Result (Maybe String) FormError needs {RequestParserConfig}`.
+- `multipart_values : Request -> Result MultipartFormValues MultipartError needs {RequestParserConfig}`
+  for buffered `multipart/form-data` bodies using ambient parser options.
 - `multipart_values_with : MultipartOptions -> Request -> Result MultipartFormValues MultipartError`
   for explicit max total bytes, part count, part bytes, text bytes, and file
-  bytes. `default_multipart_options` leaves all dimensions unlimited.
+  bytes. `default_multipart_options` now uses a protective buffered default:
+  10 MiB total/part/file, 1000 parts, and 64 KiB text parts.
 - `multipart_value`, `multipart_text`, and `multipart_file` helpers for pulling
   individual values out of `MultipartFormValues`.
 - `sanitize_filename : String -> Maybe String` validates client-provided
@@ -564,9 +569,10 @@ Still worth adding:
 - Richer upload policy for filenames, header parameter edge cases, and large
   streaming uploads.
 
-These should compose with the existing effect patterns: apps that want shared
-decode policy can lift these primitives into route-specific effects at the
-boundary, just like the JSON example does.
+Shared decode policy now composes through `RequestParserConfig` and
+`with_request_parser_options`. Default helpers (`form_values`, `query_values`,
+and `multipart_values`) read the ambient app policy; `*_with` helpers remain
+pure explicit overrides for route-local exceptions.
 
 CORS lives in the wrap-function family rather than route matching:
 
@@ -697,9 +703,17 @@ content_type = image/jpeg
 bytes = 52285
 ```
 
+URL-encoded size limits are now implemented through `UrlEncodedOptions`,
+`RequestParserConfig`, `with_request_parser_options`, `query_values_with`, and
+`form_values_with`. The default ambient policy caps total input at 64 KiB,
+fields at 1024, field names at 1024 bytes, and field values at 16 KiB.
+
 Multipart size limits are now implemented through `MultipartOptions` and
-`multipart_values_with`. Defaults are unlimited for compatibility; apps can cap
-total bytes, part count, part bytes, text bytes, and file bytes.
+`multipart_values_with`, with `RequestParserOptions` bundling URL-encoded and
+multipart policy for app-wide installation. The default policy caps total
+buffered input, each part, and each file at 10 MiB, caps text parts at 64 KiB,
+and caps part count at 1000. Apps can set any dimension to `Nothing` when they
+intentionally want no Edda-level limit.
 
 `sanitize_filename` is available for upload hygiene. It preserves ordinary
 filename characters, including whitespace, but rejects empty names, `.`/`..`,
@@ -769,8 +783,9 @@ Current coverage:
 - `RouterTest`: method/path matching, path params, group fallthrough, and
   accumulated `matches`, plus `405`, `Allow`, automatic `OPTIONS`, and `HEAD`
   behavior.
-- `RequestTest`: query/form decoding, cookies, filename sanitizing, quoted
-  multipart parameters, file parts, and multipart size limits.
+- `RequestTest`: query/form decoding, URL-encoded parser limits, cookies,
+  filename sanitizing, quoted multipart parameters, file parts, and multipart
+  size limits.
 - `ResponseTest`: response constructors, status/header mutators, redirects,
   HTML, and binary bodies.
 - `CorsTest`: CORS actual requests, preflight handling, disallowed origins,
