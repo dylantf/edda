@@ -56,24 +56,26 @@ effects onto real BEAM processes and supervision. Edda doesn't wrap
 any of it — because it's effects and handlers, it composes with
 routes the same way every other Saga pattern does.
 
-The hello-world `main` already discharges the actor effects that
-`serve` needs:
+Edda's root `serve` helper installs the BEAM actor handler for you:
 
 ```saga
 main () = {
-  let cfg = { default_config | port: 8080 }
-  case serve cfg (to_handler app) {
+  let app = create_app |> use_routes router |> use_port 8080
+  case serve app {
     Err e -> dbg ("startup failed", e)
-    Ok h  -> await_shutdown h
+    Ok _  -> ()
   }
-} with {beam_actor, console}
+}
 ```
 
-`beam_actor` is the handler that connects the abstract effects to the
-concrete runtime. The server, the accept loop, and each request
-handler are all real BEAM processes underneath. The effect row
-disappears at this boundary; everything inside `serve` runs against
-real processes.
+Internally, `beam_actor` is the handler that connects the abstract effects to
+the concrete runtime. The server, the accept loop, and each request handler are
+all real BEAM processes underneath. The effect row disappears at this boundary;
+everything inside `serve` runs against real processes.
+
+For startup logging, use `start` directly. Its `Ok` branch means the listener
+is bound, so the app can print, record metrics, or initialize adjacent state
+before calling `wait`.
 
 ## Panics in routes
 

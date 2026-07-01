@@ -23,10 +23,25 @@ pub fun serve : Config -> (Request -> Response) -> Result ShutdownHandle String
   needs {Process, Actor SupMsg, Monitor, Timer, Server}
 ```
 
-The handler is **pure**: `Request -> Response`, no `needs` row. All
-effects must be discharged before control returns to `serve`. Inside
-the closure we hand to `serve`, we're free to attach as many `with`
-stacks as we like — per-request, per-route, per-group, anything goes.
+Edda wraps this with an app root:
+
+```saga
+pub fun create_app : App
+pub fun use_routes : (Request -> Response needs {RequestParserConfig}) -> App -> App
+pub fun use_port : Int -> App -> App
+pub fun use_server_events : Handler Http.Server -> App -> App
+pub fun start : App -> Result RunningApp String
+pub fun wait : RunningApp -> Unit
+pub fun serve : App -> Result Unit String
+```
+
+`Edda.serve` installs Edda's default request parser options and Saga's
+`beam_actor` handler, then blocks until the server shuts down. Apps that want
+startup logging or metrics use `start` and do that work in the `Ok` branch
+before calling `wait`. Apps that care about server events configure a handler
+with `use_server_events`; if unset, Edda falls back to `discard_events`. Edda
+does not install stdio or log by default. The lower-level `to_handler` helpers
+still exist for code that wants direct `saga_http` lifecycle control.
 
 ### Request and Response wrapping
 
@@ -105,18 +120,39 @@ without inventing a second response type.
 ### The boundary helpers
 
 ```saga
+pub fun create_app : App
+pub fun use_routes : (Request -> Response needs {RequestParserConfig}) -> App -> App
+pub fun use_options : RequestParserOptions -> App -> App
+pub fun use_config : Http.Config -> App -> App
+pub fun use_port : Int -> App -> App
+pub fun use_server_events : Handler Http.Server -> App -> App
+pub fun start : App -> Result RunningApp String
+pub fun wait : RunningApp -> Unit
+pub fun serve : App -> Result Unit String
+
 pub fun from_http  : Http.Request -> Request
-pub fun to_handler : (Request -> Response) -> Http.Request -> Response
+pub fun to_handler : (Request -> Response needs {RequestParserConfig, ..e})
+                 -> Http.Request -> Response needs {..e}
+pub fun to_handler_with : RequestParserOptions
+                      -> (Request -> Response needs {RequestParserConfig, ..e})
+                      -> Http.Request -> Response needs {..e}
 ```
 
 The simplest usage is one line:
 
 ```saga
-serve config (to_handler app)
+create_app
+|> use_routes router
+|> use_port 8080
+|> serve
 ```
 
-For ambient context, users skip `to_handler` and write their own boundary
-(see [Ambient context handlers](#3-ambient-context-handlers) below).
+`serve` installs Edda's default request parser options and Saga's BEAM actor
+handler. `start` returns once the listener is bound, so startup logs live
+naturally in the caller's `Ok` branch before `wait`. Server events are handled
+by the configured `use_server_events` handler; if none is configured, Edda uses
+`discard_events`. `to_handler_with` is the lower-level parser policy escape
+hatch for apps that intentionally work directly with `saga_http`.
 
 ## Routes and composition
 
@@ -569,10 +605,12 @@ Still worth adding:
 - Richer upload policy for filenames, header parameter edge cases, and large
   streaming uploads.
 
-Shared decode policy now composes through `RequestParserConfig` and
-`with_request_parser_options`. Default helpers (`form_values`, `query_values`,
-and `multipart_values`) read the ambient app policy; `*_with` helpers remain
-pure explicit overrides for route-local exceptions.
+Shared decode policy now composes through `RequestParserConfig`. `to_handler`
+installs default parser options, `to_handler_with` installs custom app-wide
+options, and `with_request_parser_options` is still available for sub-apps or
+tests. Default helpers (`form_values`, `query_values`, and `multipart_values`)
+read the ambient app policy; `*_with` helpers remain pure explicit overrides
+for route-local exceptions.
 
 CORS lives in the wrap-function family rather than route matching:
 
@@ -653,12 +691,11 @@ correct but ugly. Real apps want UUIDv7, an atomic counter via `Std.Ref`,
 or a Hex package via FFI. Not a framework concern, but worth a recipe
 in docs.
 
-### A `to_handler_with` helper
+### Boundary helper defaults
 
-Right now, ambient context requires the user to write their own boundary
-function. A `to_handler_with` that takes a "per-request handler installer"
-might be worth providing if the pattern is common enough. Defer until we
-have multiple real apps to see what shape feels right.
+`to_handler` now installs Edda's default request parser options. Apps that need
+custom URL-encoded or multipart limits use `to_handler_with`; apps with
+unrelated ambient context can still write their own boundary with `from_http`.
 
 ### Static files
 
@@ -704,9 +741,10 @@ bytes = 52285
 ```
 
 URL-encoded size limits are now implemented through `UrlEncodedOptions`,
-`RequestParserConfig`, `with_request_parser_options`, `query_values_with`, and
-`form_values_with`. The default ambient policy caps total input at 64 KiB,
-fields at 1024, field names at 1024 bytes, and field values at 16 KiB.
+`RequestParserConfig`, `to_handler_with`, `with_request_parser_options`,
+`query_values_with`, and `form_values_with`. The default ambient policy caps
+total input at 64 KiB, fields at 1024, field names at 1024 bytes, and field
+values at 16 KiB.
 
 Multipart size limits are now implemented through `MultipartOptions` and
 `multipart_values_with`, with `RequestParserOptions` bundling URL-encoded and

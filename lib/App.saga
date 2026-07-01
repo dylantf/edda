@@ -1,0 +1,104 @@
+module Edda.App
+
+import Std.Actor (beam_actor)
+import Edda.Request (
+  Request,
+  RequestParserConfig,
+  RequestParserOptions,
+  default_request_parser_options,
+  to_handler_with
+)
+import Edda.Response (not_found)
+import SagaHttp.Http as Http (
+  Config,
+  Response,
+  Server,
+  ShutdownHandle,
+  discard_events
+)
+
+type ServerEventHandler = ServerEventHandler (Handler Server)
+
+#@ Root Edda application configuration.
+opaque type App =
+  | App Config RequestParserOptions (RequestParserOptions -> Http.Request -> Response) (Maybe ServerEventHandler)
+
+#@ A running Edda server.
+opaque type RunningApp =
+  | RunningApp ShutdownHandle
+
+#@ Default HTTP server config used by `create_app`.
+pub fun default_config : Config
+default_config = Http.default_config
+
+#@ Create an app with default HTTP config, default parser options, and a 404
+#@ fallback route.
+pub fun create_app : App
+create_app =
+  App default_config default_request_parser_options (fun _ _ -> not_found) Nothing
+
+#@ Set the app router.
+pub fun use_routes : (Request -> Response needs {RequestParserConfig})
+  -> App
+  -> App
+use_routes routes (App config options _ events) =
+  App config options (fun parser_options -> fun req ->
+    to_handler_with parser_options routes req) events
+
+#@ Set app-wide request parser options.
+pub fun use_options : RequestParserOptions -> App -> App
+use_options options (App config _ on_request events) =
+  App config options on_request events
+
+#@ Set the full underlying HTTP server config.
+pub fun use_config : Config -> App -> App
+use_config config (App _ options on_request events) =
+  App config options on_request events
+
+#@ Set the HTTP port.
+pub fun use_port : Int -> App -> App
+use_port port (App config options on_request events) =
+  App ({ config | port: port }) options on_request events
+
+#@ Set the server event handler. If unset, `start` and `serve` discard server
+#@ events.
+pub fun use_server_events : Handler Server -> App -> App
+use_server_events events (App config options on_request _) =
+  App config options on_request (Just (ServerEventHandler events))
+
+#@ Start an Edda app. Returns after the listener is bound.
+pub fun start : App -> Result RunningApp String
+start (App config options on_request events) = {
+  let run =
+    fun () ->
+      case Http.serve config (on_request options) {
+        Err e -> Err e
+        Ok handle -> Ok (RunningApp handle)
+      }
+  case events {
+    Just (ServerEventHandler server_events) -> run () with {
+      beam_actor,
+      server_events,
+    }
+    Nothing -> run () with {
+      beam_actor,
+      discard_events,
+    }
+  }
+}
+
+#@ Wait until a running app shuts down.
+pub fun wait : RunningApp -> Unit
+wait (RunningApp handle) =
+  Http.await_shutdown handle with {beam_actor}
+
+#@ Start an Edda app and block until it shuts down. If no server-event handler
+#@ was configured, discards server events.
+pub fun serve : App -> Result Unit String
+serve app = case start app {
+  Err e -> Err e
+  Ok running -> {
+    wait running
+    Ok ()
+  }
+}

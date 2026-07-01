@@ -116,8 +116,9 @@ case query_values req {
 `application/x-www-form-urlencoded` bodies. `multipart_values` returns
 `MultipartFormValues`, whose values can be text or buffered files with per-part
 headers. The decoded helpers read parser limits from `RequestParserConfig`;
-install app-wide defaults with `with_request_parser_options`, or use the
-`*_with` helpers for explicit route-local parser options.
+`to_handler` installs the default parser policy, `to_handler_with` installs a
+custom app-wide policy, and the `*_with` helpers provide route-local parser
+options.
 
 ## `group`: inline nesting
 

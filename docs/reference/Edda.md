@@ -299,6 +299,22 @@ origin-form query string when present.
 `matches` records the nested route/group/mount patterns that matched.
 `params` is ordered, so duplicate names from nested matches are preserved.
 
+### App
+
+```saga
+opaque type App
+```
+
+Root Edda application configuration.
+
+### RunningApp
+
+```saga
+opaque type RunningApp
+```
+
+A running Edda server.
+
 ## Effects
 
 ### Skip
@@ -321,6 +337,23 @@ effect RequestParserConfig {
 Ambient request parser configuration.
 
 ## Values
+
+### create_app
+
+```saga
+fun create_app : App
+```
+
+Create an app with default HTTP config, default parser options, and a 404
+fallback route.
+
+### default_config
+
+```saga
+fun default_config : Config
+```
+
+Default HTTP server config used by `create_app`.
 
 ### not_found
 
@@ -988,6 +1021,72 @@ fun mount : String -> (Request -> Response needs {..e}) -> Request -> Response n
 Mount a sub-app at a prefix. Captured `:name` params accumulate and are visible
 to the sub-app.
 
+### use_routes
+
+```saga
+fun use_routes : (Request -> Response needs {RequestParserConfig}) -> App -> App
+```
+
+Set the app router.
+
+### use_options
+
+```saga
+fun use_options : RequestParserOptions -> App -> App
+```
+
+Set app-wide request parser options.
+
+### use_config
+
+```saga
+fun use_config : Config -> App -> App
+```
+
+Set the full underlying HTTP server config.
+
+### use_port
+
+```saga
+fun use_port : Int -> App -> App
+```
+
+Set the HTTP port.
+
+### use_server_events
+
+```saga
+fun use_server_events : Handler Server -> App -> App
+```
+
+Set the server event handler. If unset, `start` and `serve` discard server
+events.
+
+### start
+
+```saga
+fun start : App -> Result RunningApp String
+```
+
+Start an Edda app. Returns after the listener is bound.
+
+### wait
+
+```saga
+fun wait : RunningApp -> Unit
+```
+
+Wait until a running app shuts down.
+
+### serve
+
+```saga
+fun serve : App -> Result Unit String
+```
+
+Start an Edda app and block until it shuts down. If no server-event handler was
+configured, discards server events.
+
 ### with_request_parser_options
 
 ```saga
@@ -1007,8 +1106,17 @@ Lift a SagaHttp.Http.Request into an Edda.Request.
 ### to_handler
 
 ```saga
-fun to_handler : (Request -> Response) -> Http.Request -> Response
+fun to_handler : (Request -> Response needs {RequestParserConfig, ..e}) -> Http.Request -> Response needs {..e}
 ```
 
 Adapt an Edda app to the `Request -> Response` shape `SagaHttp.serve`
-expects. Use as: `serve config (to_handler app)`.
+expects, installing Edda's default request parser options. Use as:
+`SagaHttp.Http.serve config (to_handler app)`.
+
+### to_handler_with
+
+```saga
+fun to_handler_with : RequestParserOptions -> (Request -> Response needs {RequestParserConfig, ..e}) -> Http.Request -> Response needs {..e}
+```
+
+Adapt an Edda app with explicit request parser options.

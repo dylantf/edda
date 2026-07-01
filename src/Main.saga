@@ -1,6 +1,5 @@
 module Main
 
-import Std.Actor (beam_actor)
 import Std.File (fs)
 import Std.IO (console, println)
 import Demo.AuthMiddleware as Auth
@@ -21,38 +20,14 @@ import Edda (
   mount,
   choose,
   static_dir,
-  to_handler,
-  default_request_parser_options,
-  with_request_parser_options,
-  RequestParserConfig
+  RequestParserConfig,
+  create_app,
+  use_routes,
+  use_port,
+  start,
+  wait
 )
-import SagaHttp.Http (
-  serve,
-  await_shutdown,
-  default_config,
-  text,
-  Server,
-  ServerEvent,
-  ClientDisconnected,
-  IdleTimeout,
-  PipelinedRequestDropped,
-  Response
-)
-
-# Filtering Server-event handler: silently drop the routine events that fire
-# on every request (client closing the socket, idle keep-alives, etc.) but
-# surface anything else as a debug print.
-handler quiet_events for Server {
-  event e = {
-    case e {
-      ClientDisconnected -> ()
-      IdleTimeout -> ()
-      PipelinedRequestDropped -> ()
-      _ -> dbg e
-    }
-    resume ()
-  }
-}
+import SagaHttp.Http (text, Response)
 
 fun home : Request -> Response
 home _ =
@@ -68,37 +43,38 @@ home _ =
     """
 
 fun json_cors : CorsConfig
-json_cors = {
-  default_cors_config |
-  allow_origins: ["*"],
-  allow_methods: [GET, POST, OPTIONS],
-  allow_headers: ["Content-Type", "Authorization"],
-}
+json_cors =
+  { default_cors_config |
+    allow_origins: ["*"],
+    allow_methods: [GET, POST, OPTIONS],
+    allow_headers: ["Content-Type", "Authorization"],
+  }
 
-fun app_routes : Request -> Response needs {RequestParserConfig}
-app_routes req =
-  choose [
-    static_dir "/static" "src/static",
-    mount "/timing" Timing.app,
-    mount "/secret" Auth.app,
-    mount "/errors" Errors.app,
-    mount "/form" Form.app,
-    mount "/session" Session.app,
-    mount "/json" (with_cors json_cors JsonApi.app),
-    mount "/spec" Spec.app,
-    fun r -> home r,
-  ] req with {fs}
-
-fun app : Request -> Response
-app req = with_request_parser_options default_request_parser_options app_routes req
+fun router : Request -> Response needs {RequestParserConfig}
+router req = choose [
+  static_dir "/static" "src/static",
+  mount "/timing" Timing.app,
+  mount "/secret" Auth.app,
+  mount "/errors" Errors.app,
+  mount "/form" Form.app,
+  mount "/session" Session.app,
+  mount "/json" (with_cors json_cors JsonApi.app),
+  mount "/spec" Spec.app,
+  fun r -> home r,
+] req with {fs}
 
 main () = {
-  let cfg = { default_config | port: 8080 }
-  case serve cfg (to_handler app) {
+  let port = 8080
+  let app =
+    create_app
+    |> use_routes router
+    |> use_port port
+
+  case start app {
     Err e -> dbg ("startup failed", e)
-    Ok h -> {
-      println $"🚀 Server running at http://localhost:{cfg.port}"
-      await_shutdown h
+    Ok running -> {
+      println $"Server running at http://localhost:{port}"
+      wait running
     }
   }
-} with {beam_actor, quiet_events, console}
+} with console

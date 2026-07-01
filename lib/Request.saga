@@ -604,9 +604,22 @@ target_query target = case target {
 }
 
 #@ Adapt an Edda app to the `Request -> Response` shape `SagaHttp.serve`
-#@ expects. Use as: `serve config (to_handler app)`.
-pub fun to_handler : (Request -> Response) -> Http.Request -> Response
-to_handler app hr = app (from_http hr)
+#@ expects, installing Edda's default request parser options.
+#@ Use as: `serve config (to_handler app)`.
+pub fun to_handler : (Request -> Response needs {RequestParserConfig, ..e})
+  -> Http.Request
+  -> Response
+  needs {..e}
+to_handler app = to_handler_with default_request_parser_options app
+
+#@ Adapt an Edda app with explicit request parser options.
+pub fun to_handler_with : RequestParserOptions
+  -> (Request -> Response needs {RequestParserConfig, ..e})
+  -> Http.Request
+  -> Response
+  needs {..e}
+to_handler_with options app hr =
+  with_request_parser_options options app (from_http hr)
 
 fun multipart_boundary : String -> Maybe String
 multipart_boundary content_type = header_param "boundary" content_type

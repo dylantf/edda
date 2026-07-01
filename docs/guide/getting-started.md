@@ -123,40 +123,47 @@ phase.
 ```saga
 module Main
 
-import Std.Actor (beam_actor)
 import Std.IO (console, println)
-import Edda (Request, choose, route, GET, to_handler)
-import SagaHttp.Http (serve, await_shutdown, default_config, text, Response)
+import Edda (Request, choose, route, GET, create_app, use_routes, use_port, start, wait)
+import SagaHttp.Http (text, Response)
 
 fun home : Request -> Response
 home _ = text 200 "hello from edda"
 
-fun app : Request -> Response
-app req = choose [
+fun router : Request -> Response
+router req = choose [
   route GET "/" home,
 ] req
 
 main () = {
-  let cfg = { default_config | port: 8080 }
-
-  case serve cfg (to_handler app) {
+  let port = 8080
+  let app =
+    create_app
+      |> use_routes router
+      |> use_port port
+  case start app {
     Err e -> dbg ("startup failed", e)
-    Ok h -> {
-      println $"server at http://localhost:{cfg.port}"
-      await_shutdown h
+    Ok running -> {
+      println $"Server running at http://localhost:{port}"
+      wait running
     }
-  } with {beam_actor, console}
-}
+  }
+} with console
 ```
 
 Three things worth noticing:
 
-- **`app : Request -> Response`** — pure. No `needs` row. All effects
-  in your routes have to be discharged somewhere before control returns
-  to `serve`. Inside `app` you're free to install effect handlers at
-  any level you like.
-- **`to_handler app`** — adapts Edda's `Request -> Response` to the
-  shape `serve` expects (which takes a `saga_http` request).
+- **`router : Request -> Response`** — this small router is pure. Apps that use
+  decoded form/query/multipart helpers may need `RequestParserConfig`; the
+  root `serve` helper supplies that for you.
+- **`create_app |> use_routes router |> use_port port`** — builds the app root
+  with defaults, then overrides the pieces this program cares about.
+- **`start app`** — starts the server and returns after the socket is bound.
+  The `Ok` branch is the natural place for startup logs or metrics.
+- **`wait running`** — keeps the program alive until the server shuts down.
+- **`serve app`** — starts the server, installs Edda's default parser policy,
+  provides Saga's BEAM actor handler, and blocks until shutdown. Server events
+  are discarded only if no handler was configured with `use_server_events`.
 - **`choose [...]`** — the router. Each route is a function; `choose`
   tries them top to bottom.
 
