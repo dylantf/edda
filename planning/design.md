@@ -398,9 +398,9 @@ below for why this took a few rounds to land.)
 
 ## JSON
 
-Lives in `Edda.Json`. Built on `saga_json`'s `ToJson` / `FromJson` traits,
-so a record with `deriving (ToJson, FromJson)` round-trips through HTTP
-without a hand-written codec.
+Lives in `Edda.Json`. Built on `saga_json`'s `ToJson` / `FromJson` traits.
+Application records now use explicit hand-written impls; Saga no longer has
+user-defined derives through `Generic`.
 
 ### Encoding: `json`
 
@@ -408,10 +408,18 @@ without a hand-written codec.
 pub fun json : Int -> a -> Response where {a: ToJson}
 ```
 
-Sets `Content-Type: application/json` and serializes via `E.serialize`.
+Sets `Content-Type: application/json` and serializes via `Encode.serialize`.
 
 ```saga
-record User { id: Int, name: String } deriving (ToJson)
+import SagaJson.Encode as Encode
+import SagaJson.Encode (ToJson)
+
+record User { id: Int, name: String }
+
+impl ToJson for User {
+  to_json u =
+    Encode.object [("id", to_json u.id), ("name", to_json u.name)]
+}
 
 fun show : Request -> Response
 show _ = json 200 (User { id: 1, name: "Alice" })

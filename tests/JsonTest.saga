@@ -1,0 +1,71 @@
+module JsonTest
+
+import Std.BitString
+import Std.Fail (Fail)
+import Std.Test (Testing, describe, test, assert_eq)
+import Edda (Request, POST)
+import Edda.Json (json, body_json, BodyError)
+import SagaHttp.Http as Http (Response)
+import SagaJson as J
+import SagaJson.Encode as Encode
+import SagaJson.Encode (ToJson)
+import SagaJson.Decode as Decode
+import SagaJson.Decode (FromJson)
+
+record JsonUser {
+  id: Int,
+  name: String,
+} deriving (Debug, Eq)
+
+impl ToJson for JsonUser {
+  to_json u =
+    Encode.object [
+      ("id", to_json u.id),
+      ("name", to_json u.name),
+    ]
+}
+
+impl FromJson for JsonUser needs {Fail J.Error} {
+  from_json j = JsonUser {
+    id: Decode.at "id" Decode.int j,
+    name: Decode.at "name" Decode.string j,
+  }
+}
+
+fun req_with_body : String -> Request
+req_with_body body = Request {
+  method: POST,
+  path: "/json",
+  original_path: "/json",
+  query: Nothing,
+  matches: [],
+  params: [],
+  headers: [("Content-Type", "application/json")],
+  body: Just (BitString.from_string body),
+}
+
+fun body_text : Response -> String
+body_text resp = case resp.body {
+  Http.Buffered text -> text
+  _ -> "<<non-text response>>"
+}
+
+pub fun tests : Unit -> Unit needs {Testing}
+tests () = {
+  describe "Edda.Json" (fun () -> {
+    test "json encodes with hand-written ToJson impls" (fun () -> {
+      let resp = json 200 (JsonUser { id: 1, name: "Alice" })
+      assert_eq resp.status 200
+      assert_eq resp.headers [("Content-Type", "application/json")]
+      assert_eq (body_text resp) "{\"id\":1,\"name\":\"Alice\"}"
+    })
+
+    test "body_json decodes with hand-written FromJson impls" (fun () -> {
+      let req = req_with_body "{\"id\":2,\"name\":\"Bob\"}"
+      case (body_json req : Result JsonUser BodyError) {
+        Ok user -> assert_eq user (JsonUser { id: 2, name: "Bob" })
+        Err _ -> assert_eq True False
+      }
+    })
+  })
+}

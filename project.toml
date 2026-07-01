@@ -9,5 +9,5 @@ module = "Edda"
 expose = ["Edda", "Edda.Json", "Edda.Spec"]
 
 [deps]
-saga_http = { git = "https://github.com/dylantf/saga_http" }
-saga_json = { git = "https://github.com/dylantf/saga_json" }
+saga_http = { path = "../saga_http" }
+saga_json = { path = "../saga_json" }

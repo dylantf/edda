@@ -5,8 +5,8 @@ It gives you a `json` response constructor on one side and a
 `body_json` decoder on the other; everything else is the `saga_json`
 trait machinery doing the work.
 
-A record with `deriving (ToJson, FromJson)` round-trips through HTTP
-without a hand-written codec.
+Application records round-trip through HTTP by hand-writing `ToJson` and
+`FromJson` impls with `SagaJson.Encode` and `SagaJson.Decode`.
 
 This is part of Edda's core API: `json`, `body_json`, `BodyError`, and
 `body_error_response`. These helpers intentionally stay small; application
@@ -24,13 +24,23 @@ returns a `Response` with the given status.
 
 ```saga
 import Edda.Json (json)
-import SagaJson.Codec (ToJson)
+import SagaJson.Encode as Encode
+import SagaJson.Encode (ToJson)
 
 record User {
   id: Int,
   name: String,
   email: String,
-} deriving (ToJson)
+}
+
+impl ToJson for User {
+  to_json u =
+    Encode.object [
+      ("id", to_json u.id),
+      ("name", to_json u.name),
+      ("email", to_json u.email),
+    ]
+}
 
 fun show_user : Request -> Response
 show_user _ =
@@ -46,8 +56,8 @@ json 200 [user1, user2, user3]
 
 works without ceremony.
 
-For custom shapes, hand-write the impl or reach for the post-processing
-combinators — see the
+For larger custom shapes, keep composing the primitive builders or reach for
+the post-processing combinators — see the
 [`saga_json` encoding guide](https://github.com/dylantf/saga_json/blob/main/docs/guide/encoding.md).
 
 ## Decoding: `body_json`
@@ -73,6 +83,27 @@ else for inference to latch onto:
 case (body_json req : Result CreateUser BodyError) {
   Err e    -> body_error_response e
   Ok input -> ...
+}
+```
+
+Write decoders with `SagaJson.Decode`:
+
+```saga
+import Std.Fail (Fail)
+import SagaJson as J
+import SagaJson.Decode as Decode
+import SagaJson.Decode (FromJson)
+
+record CreateUser {
+  name: String,
+  email: String,
+}
+
+impl FromJson for CreateUser needs {Fail J.Error} {
+  from_json j = CreateUser {
+    name: Decode.at "name" Decode.string j,
+    email: Decode.at "email" Decode.string j,
+  }
 }
 ```
 

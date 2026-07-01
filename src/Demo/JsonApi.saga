@@ -1,30 +1,53 @@
 module Demo.JsonApi
 
 # A small JSON-API demo. Shows:
-#   - GET that encodes a record via `deriving (ToJson)` and `json`.
-#   - POST that decodes a body via `deriving (FromJson)` and `body_json`.
+#   - GET that encodes a record via a hand-written `ToJson` impl and `json`.
+#   - POST that decodes a body via a hand-written `FromJson` impl and `body_json`.
 #   - Two error-handling styles: inline match, and lifted into a Fail effect.
 
+import Std.Fail (Fail)
 import Edda (Request, GET, POST, route, choose, param)
 import Edda.Json (json, body_json, body_error_response, BodyError)
 import SagaHttp.Http (Response, text)
-import SagaJson.Codec (ToJson, FromJson)
+import SagaJson as J
+import SagaJson.Decode (FromJson)
+import SagaJson.Encode (ToJson)
 
 record User {
   id: Int,
   name: String,
   email: String,
-} deriving (Debug, ToJson, FromJson)
+} deriving (Debug)
+
+impl ToJson for User {
+  to_json u =
+    Encode.object [
+      ("id", to_json u.id),
+      ("name", to_json u.name),
+      ("email", to_json u.email),
+    ]
+}
 
 record CreateUser {
   name: String,
   email: String,
-} deriving (Debug, FromJson)
+} deriving (Debug)
+
+impl FromJson for CreateUser needs {Fail J.Error} {
+  from_json j = CreateUser {
+    name: Decode.at "name" Decode.string j,
+    email: Decode.at "email" Decode.string j,
+  }
+}
 
 record CreatedUser {
   id: Int,
   echo: User,
-} deriving (Debug, ToJson)
+} deriving (Debug)
+
+impl ToJson for CreatedUser {
+  to_json u = Encode.object [("id", to_json u.id), ("echo", to_json u.echo)]
+}
 
 fun show_user : Request -> Response
 show_user req = case param "id" req {
