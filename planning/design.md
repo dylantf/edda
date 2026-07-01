@@ -158,7 +158,10 @@ fun choose : List (Request -> Response needs {Skip, ..e})
 ```
 
 `choose` discharges `Skip` by trying the next route in its list when one
-skips. If nothing matches, it falls back to `not_found` (404).
+skips. If no path matches, it falls back to `not_found` (404). If a path matches
+but no route accepts the request method, it returns `405 Method Not Allowed`
+with an `Allow` header. Matched paths also get automatic `OPTIONS`, and `HEAD`
+can use `GET` routes with the response body stripped.
 
 ```saga
 let app = choose [
@@ -618,19 +621,19 @@ lookup and natural prefix grouping. Defer until measured.
 
 ### Route miss semantics
 
-Current routing keeps the small `choose` model: if no route handles a request,
-the fallback is `404`. That is enough for first use, but web frameworks usually
-grow a little more protocol polish here:
+Implemented: `route` now distinguishes "path did not match" from "path matched
+but method did not". `choose` keeps trying later routes after a method miss, but
+if nothing handles the request it can return protocol-aware fallbacks:
 
-- `405 Method Not Allowed` when the path matches but the method does not.
-- `Allow` headers listing supported methods for a matched path.
-- Automatic `OPTIONS` responses for matched paths.
-- Automatic `HEAD` behavior for `GET` routes, ideally preserving headers while
-  omitting the response body.
+- no path matched: `404 not_found`;
+- path matched but method missed: `405 Method Not Allowed`;
+- `Allow` lists the matched route methods, adds implicit `HEAD` for `GET`, and
+  adds automatic `OPTIONS`;
+- `OPTIONS` for a matched path returns `204` with `Allow`;
+- `HEAD` can use a `GET` route and strips the response body.
 
-These are easiest to add once route matching can report "path matched but
-method missed" rather than only "handled or skipped". Keep the current simple
-fallthrough semantics until we deliberately introduce that richer match result.
+Mounted sub-apps remain opaque `Request -> Response` values, so their internal
+method semantics are owned by the mounted app.
 
 ### Better request IDs
 
@@ -759,7 +762,8 @@ so they cover router semantics and request parsers without spinning up
 Current coverage:
 
 - `RouterTest`: method/path matching, path params, group fallthrough, and
-  accumulated `matches`.
+  accumulated `matches`, plus `405`, `Allow`, automatic `OPTIONS`, and `HEAD`
+  behavior.
 - `RequestTest`: query/form decoding, cookies, filename sanitizing, quoted
   multipart parameters, file parts, and multipart size limits.
 - `CorsTest`: CORS actual requests, preflight handling, disallowed origins,

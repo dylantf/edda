@@ -23,10 +23,10 @@ Wrapped with `route`, it becomes a matcher:
 route GET "/users/:id" show_user
 ```
 
-`route` returns a function that runs the handler if the method and
-path pattern match, and `skip!`s otherwise. The `Skip` effect is what
-the router uses to walk past non-matching routes; `choose` discharges
-it.
+`route` returns a function that runs the handler if the method and path pattern
+match. If the path does not match, it `skip!`s. If the path matches but the
+method does not, it reports the allowed method so `choose` can produce a `405`
+if no later route handles the request.
 
 Route paths are matched by segments. Empty segments are ignored, so `/users`
 and `/users/` match the same pattern. A plain segment must match exactly, and
@@ -46,8 +46,11 @@ app req = choose [
 ] req
 ```
 
-`choose` tries each route in order. The first one that doesn't `skip!`
-wins. If all of them skip, you get the default `not_found` (404).
+`choose` tries each route in order. The first one that doesn't `skip!` wins. If
+no path matches, you get the default `not_found` (404). If a path matches but no
+route accepts the request method, you get `405 Method Not Allowed` with an
+`Allow` header. `OPTIONS` gets an automatic 204 response for matched paths, and
+`HEAD` can use `GET` routes with the body stripped.
 
 Routes can declare effects they need. The router lets each route
 declare its own set — they don't have to agree:
@@ -190,7 +193,7 @@ paths.
 | `req.path`          | The path the current matcher sees (stripped). |
 | `req.original_path` | The full path as it came in off the wire.     |
 
-## Fallthrough and `not_found`
+## Fallthrough, `405`, and `OPTIONS`
 
 If nothing in a `choose` matches, the request falls through to
 Edda's `not_found` (a 404 with body `"not found"`). To customize, add
@@ -207,3 +210,7 @@ choose [
 A plain lambda is a perfectly valid route — it doesn't have a method
 or pattern, so it always matches. The router treats `Request ->
 Response` as the most general possible route signature.
+
+If the path matches but only with other methods, Edda returns `405 Method Not
+Allowed` and an `Allow` header. `GET` routes imply `HEAD`, and matched paths get
+automatic `OPTIONS` responses.

@@ -6,6 +6,8 @@ import Edda (
   Method,
   GET,
   POST,
+  OPTIONS,
+  HEAD,
   choose,
   group,
   route,
@@ -37,63 +39,108 @@ require_param name request = case param name request {
   Nothing -> "<<missing>>"
 }
 
+fun header : String -> Response -> Maybe String
+header name response = Http.find_header name response.headers
+
 pub fun tests : Unit -> Unit needs {Testing}
 tests () = {
   describe "Router" (fun () -> {
     test "routes by method and path parameters" (fun () -> {
-      let app = choose [
-        route GET "/users/:id" (fun request -> {
-          Http.text 200 (require_param "id" request)
-        }),
-      ]
+      let app =
+        choose [
+          route GET "/users/:id" (fun request -> {
+            Http.text 200 (require_param "id" request)
+          }),
+        ]
       let resp = app (req GET "/users/42")
       assert_eq resp.status 200
       assert_eq (body_text resp) "42"
     })
 
-    test "method mismatch falls through to 404" (fun () -> {
-      let app = choose [
-        route POST "/users/:id" (fun _ -> Http.text 200 "posted"),
-      ]
+    test "method mismatch returns 405 with Allow header" (fun () -> {
+      let app =
+        choose [route POST "/users/:id" (fun _ -> Http.text 200 "posted")]
       let resp = app (req GET "/users/42")
-      assert_eq resp.status 404
-      assert_eq (body_text resp) "not found"
+      assert_eq resp.status 405
+      assert_eq (body_text resp) "method not allowed"
+      assert_eq (header "allow" resp) (Just "POST, OPTIONS")
+    })
+
+    test "OPTIONS returns Allow for matched paths" (fun () -> {
+      let app =
+        choose [
+          route GET "/users/:id" (fun _ -> Http.text 200 "got"),
+          route POST "/users/:id" (fun _ -> Http.text 200 "posted"),
+        ]
+      let resp = app (req OPTIONS "/users/42")
+      assert_eq resp.status 204
+      assert_eq (body_text resp) ""
+      assert_eq (header "allow" resp) (Just "GET, HEAD, POST, OPTIONS")
+    })
+
+    test "HEAD uses GET routes but strips the body" (fun () -> {
+      let app = choose [route GET "/users/:id" (fun _ -> Http.text 200 "got")]
+      let resp = app (req HEAD "/users/42")
+      assert_eq resp.status 200
+      assert_eq (body_text resp) ""
+      assert_eq (header "content-type" resp) (Just "text/plain")
+    })
+
+    test "later matching routes still win after an earlier method mismatch" (fun () -> {
+      let app =
+        choose [
+          route POST "/users/:id" (fun _ -> Http.text 200 "posted"),
+          route GET "/users/:id" (fun _ -> Http.text 200 "got"),
+        ]
+      let resp = app (req GET "/users/42")
+      assert_eq resp.status 200
+      assert_eq (body_text resp) "got"
+    })
+
+    test "group method mismatch bubbles to outer choose as 405" (fun () -> {
+      let app =
+        choose [
+          group "/api" [route POST "/users" (fun _ -> Http.text 200 "posted")],
+        ]
+      let resp = app (req GET "/api/users")
+      assert_eq resp.status 405
+      assert_eq (header "allow" resp) (Just "POST, OPTIONS")
     })
 
     test "group inner miss falls through to later outer routes" (fun () -> {
-      let app = choose [
-        group "/api" [
-          route GET "/users" (fun _ -> Http.text 200 "users"),
-        ],
-        route GET "/api/status" (fun _ -> Http.text 200 "status"),
-      ]
+      let app =
+        choose [
+          group "/api" [route GET "/users" (fun _ -> Http.text 200 "users")],
+          route GET "/api/status" (fun _ -> Http.text 200 "status"),
+        ]
       let resp = app (req GET "/api/status")
       assert_eq resp.status 200
       assert_eq (body_text resp) "status"
     })
 
     test "group accumulates params and match trace" (fun () -> {
-      let app = choose [
-        group "/users/:user_id" [
-          route GET "/posts/:post_id" (fun request -> {
-            assert_eq (require_param "user_id" request) "alice"
-            assert_eq (require_param "post_id" request) "first"
-            assert_eq (List.length request.matches) 2
-            case request.matches {
-              [outer, inner] -> {
-                assert_eq outer.pattern "/users/:user_id"
-                assert_eq outer.path "/users/alice"
-                assert_eq outer.params [("user_id", "alice")]
-                assert_eq inner.pattern "/posts/:post_id"
-                assert_eq inner.path "/posts/first"
-                assert_eq inner.params [("post_id", "first")]
+      let app =
+        choose [
+          group "/users/:user_id" [
+            route GET "/posts/:post_id" (fun request -> {
+              assert_eq (require_param "user_id" request) "alice"
+              assert_eq (require_param "post_id" request) "first"
+              assert_eq (List.length request.matches) 2
+              case request.matches {
+                [outer, inner] -> {
+                  assert_eq outer.pattern "/users/:user_id"
+                  assert_eq outer.path "/users/alice"
+                  assert_eq outer.params [("user_id", "alice")]
+                  assert_eq inner.pattern "/posts/:post_id"
+                  assert_eq inner.path "/posts/first"
+                  assert_eq inner.params [("post_id", "first")]
+                }
+                _ -> assert_true False
               }
-              _ -> assert_true False
-            }
-            Http.text 200 "ok"
-          }),
-        ],
-      ]
+              Http.text 200 "ok"
+            }),
+          ],
+        ]
       let resp = app (req GET "/users/alice/posts/first")
       assert_eq resp.status 200
       assert_eq (body_text resp) "ok"

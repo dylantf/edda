@@ -277,6 +277,7 @@ origin-form query string when present.
 ```saga
 effect Skip {
   fun skip : Unit -> a
+  fun method_not_allowed : List Method -> a
 }
 ```
 
@@ -820,8 +821,9 @@ fun route : Method -> String -> (Request -> Response needs {..e}) -> Request -> 
 ```
 
 Build a route. If method matches and the pattern fully consumes the path
-(capturing any `:name` segments into params), the handler runs; otherwise
-the route skips to let the next route try.
+(capturing any `:name` segments into params), the handler runs. If the path
+does not match, the route skips. If the path matches but the method does not,
+`choose` can use that information to produce `405 Method Not Allowed`.
 
 ### choose
 
@@ -829,7 +831,10 @@ the route skips to let the next route try.
 fun choose : List (Request -> Response needs {Skip, ..e}) -> Request -> Response needs {..e}
 ```
 
-Try each route in order. If every route skips, return `not_found`.
+Try each route in order. If no path matches, return `not_found`. If a path
+matches but no route accepts the request method, return `405 Method Not
+Allowed` with an `Allow` header. Matched paths get automatic `OPTIONS`, and
+`HEAD` can use `GET` routes with the response body stripped.
 
 ### group
 

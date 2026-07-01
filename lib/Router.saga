@@ -2,13 +2,9 @@ module Edda.Router
 
 import Std.List
 import Std.String
-import Edda.Request (
-  Request,
-  RouteMatch,
-  Method
-)
-import Edda.Response (not_found)
-import SagaHttp.Http (Response)
+import Edda.Request (Request, RouteMatch, Method, GET, OPTIONS, HEAD)
+import Edda.Response (not_found, no_content, with_header)
+import SagaHttp.Http (Response, ResponseBody, text)
 
 # ---------------------------------------------------------------------------
 # Skip effect — "this handler doesn't match, try the next one"
@@ -16,6 +12,7 @@ import SagaHttp.Http (Response)
 
 pub effect Skip {
   fun skip : Unit -> a
+  fun method_not_allowed : List Method -> a
 }
 
 # ---------------------------------------------------------------------------
@@ -34,15 +31,23 @@ consumed_path pattern_segs path_segs =
 
 fun add_match : RouteMatch -> Request -> Request
 add_match matched req =
-  { req | matches: req.matches <> [matched], params: req.params <> matched.params }
+  { req |
+    matches: req.matches <> [matched],
+    params: req.params <> matched.params,
+  }
 
 # Match a pattern (segments) against the START of path segments.
 # `:name` segments capture into the params list.
 # Returns Just (new captures, remaining segments) or Nothing.
-fun match_prefix : List String -> List String -> Maybe (List (String, String), List String)
+fun match_prefix : List String
+  -> List String
+  -> Maybe (List (String, String), List String)
 match_prefix pattern path = match_prefix_loop pattern path []
 
-fun match_prefix_loop : List String -> List String -> List (String, String) -> Maybe (List (String, String), List String)
+fun match_prefix_loop : List String
+  -> List String
+  -> List (String, String)
+  -> Maybe (List (String, String), List String)
 match_prefix_loop [] segs captures = Just (List.reverse captures, segs)
 match_prefix_loop (_ :: _) [] _ = Nothing
 match_prefix_loop (p :: ps) (s :: ss) captures = case p {
@@ -54,51 +59,126 @@ match_prefix_loop (p :: ps) (s :: ss) captures = case p {
 # route — method + pattern match; capture :params into req.params.
 # ---------------------------------------------------------------------------
 
-#@ Build a route. If method matches and the pattern fully consumes the path
-#@ (capturing any `:name` segments into params), the handler runs; otherwise
-#@ the route skips to let the next route try.
-pub fun route : Method -> String -> (Request -> Response needs {..e}) -> Request -> Response
+#@ Build a route. If the pattern fully consumes the path and the method matches,
+#@ the handler runs. If only the path matches, `choose` can turn the method miss
+#@ into `405 Method Not Allowed`.
+pub fun route : Method
+  -> (path: String)
+  -> (Request -> Response needs {..e})
+  -> Request
+  -> Response
   needs {Skip, ..e}
-route m pattern h req =
-  if req.method == m then {
-    case match_prefix (path_segments pattern) (path_segments req.path) {
-      Just (captures, []) -> {
-        let matched = RouteMatch {
-          pattern: pattern,
-          path: req.path,
-          params: captures,
-        }
-        h (add_match matched req)
+route m pattern h req = case match_prefix (path_segments pattern) (path_segments req.path) {
+  Just (captures, []) -> {
+    if method_matches m req.method then {
+      let matched = RouteMatch {
+        pattern: pattern,
+        path: req.path,
+        params: captures,
       }
-      _ -> skip! ()
+      let resp = h (add_match matched req)
+      if req.method == HEAD && m == GET then without_body resp else resp
     }
+    else method_not_allowed! [m]
   }
-  else skip! ()
+  _ -> skip! ()
+}
 
 # ---------------------------------------------------------------------------
 # choose — try each route in order; first one that doesn't skip wins.
 # ---------------------------------------------------------------------------
 
-pub fun choose : List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+pub fun choose : List (Request -> Response needs {Skip, ..e})
+  -> Request
+  -> Response
   needs {..e}
-choose routes req = case routes {
-  [] -> not_found
+choose routes req = choose_loop routes req []
+
+fun choose_loop : List (Request -> Response needs {Skip, ..e})
+  -> Request
+  -> List Method
+  -> Response
+  needs {..e}
+choose_loop routes req allowed = case routes {
+  [] -> miss_response req allowed
   r :: rest -> r req with {
-    skip () = choose rest req
+    skip () = choose_loop rest req allowed
+    method_not_allowed methods = choose_loop rest req (append_methods allowed methods)
   }
 }
 
 # Like `choose`, but preserves `Skip` when nothing matches. Used by `group` so
 # a prefix match only rewrites the request for inner routes; it does not claim
 # the whole prefix by turning inner misses into 404s.
-fun choose_or_skip : List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+fun choose_or_skip : List (Request -> Response needs {Skip, ..e})
+  -> Request
+  -> Response
   needs {Skip, ..e}
-choose_or_skip routes req = case routes {
-  [] -> skip! ()
+choose_or_skip routes req = choose_or_skip_loop routes req []
+
+fun choose_or_skip_loop : List (Request -> Response needs {Skip, ..e})
+  -> Request
+  -> List Method
+  -> Response
+  needs {Skip, ..e}
+choose_or_skip_loop routes req allowed = case routes {
+  [] -> if List.is_empty allowed then skip! () else method_not_allowed! allowed
   r :: rest -> r req with {
-    skip () = choose_or_skip rest req
+    skip () = choose_or_skip_loop rest req allowed
+    method_not_allowed methods = choose_or_skip_loop rest req (append_methods allowed methods)
   }
 }
+
+fun method_matches : Method -> Method -> Bool
+method_matches route_method req_method = route_method == req_method
+  || route_method == GET && req_method == HEAD
+
+fun without_body : Response -> Response
+without_body resp = { resp | body: Buffered "" }
+
+fun miss_response : Request -> List Method -> Response
+miss_response req allowed =
+  if List.is_empty allowed then not_found
+  else if req.method == OPTIONS then options_response allowed
+  else method_not_allowed_response allowed
+
+fun options_response : List Method -> Response
+options_response allowed =
+  no_content |> with_header "Allow" (allow_header allowed)
+
+fun method_not_allowed_response : List Method -> Response
+method_not_allowed_response allowed =
+  text 405 "method not allowed" |> with_header "Allow" (allow_header allowed)
+
+fun allow_header : List Method -> String
+allow_header allowed = String.join ", " (List.map show (allow_methods allowed))
+
+fun allow_methods : List Method -> List Method
+allow_methods methods = methods |> add_implicit_head |> append_method OPTIONS
+
+fun add_implicit_head : List Method -> List Method
+add_implicit_head methods =
+  if List.contains GET methods
+    && not (List.contains HEAD methods) then insert_head_after_get methods
+  else methods
+
+fun insert_head_after_get : List Method -> List Method
+insert_head_after_get methods = case methods {
+  [] -> []
+  m :: rest ->
+    if m == GET then GET :: HEAD :: rest
+    else m :: insert_head_after_get rest
+}
+
+fun append_methods : List Method -> List Method -> List Method
+append_methods acc methods = case methods {
+  [] -> acc
+  m :: rest -> append_methods (append_method m acc) rest
+}
+
+fun append_method : Method -> List Method -> List Method
+append_method method methods =
+  if List.contains method methods then methods else methods <> [method]
 
 # ---------------------------------------------------------------------------
 # group — inline sub-routes sharing the parent's effect row.
@@ -106,7 +186,10 @@ choose_or_skip routes req = case routes {
 
 #@ Match a path prefix and run the inner routes against the remainder.
 #@ Captured `:name` params accumulate and are visible to sub-routes.
-pub fun group : String -> List (Request -> Response needs {Skip, ..e}) -> Request -> Response
+pub fun group : String
+  -> List (Request -> Response needs {Skip, ..e})
+  -> Request
+  -> Response
   needs {Skip, ..e}
 group prefix routes req = {
   let prefix_segs = path_segments prefix
