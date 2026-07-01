@@ -1,0 +1,101 @@
+module ResponseTest
+
+import Std.BitString
+import Std.Test (Testing, describe, test, assert_eq)
+import Edda (
+  empty_response,
+  bytes,
+  html,
+  redirect,
+  status,
+  with_header,
+  with_headers,
+  replace_header,
+  content_type,
+  octet_stream
+)
+import SagaHttp.Http as Http (Response)
+
+fun body_text : Response -> String
+body_text resp = case resp.body {
+  Http.Buffered text -> text
+  Http.BufferedBytes body -> case BitString.to_string body {
+    Ok text -> text
+    Err _ -> "<<non-text bytes>>"
+  }
+  _ -> "<<streaming response>>"
+}
+
+fun header : String -> Response -> Maybe String
+header name response = Http.find_header name response.headers
+
+fun response_status : Response -> Int
+response_status response = response.status
+
+fun response_headers : Response -> List (String, String)
+response_headers response = response.headers
+
+pub fun tests : Unit -> Unit needs {Testing}
+tests () = {
+  describe "Response helpers" (fun () -> {
+    test "empty_response builds an empty response with the given status" (fun () -> {
+      let resp = empty_response 202
+      assert_eq (response_status resp) 202
+      assert_eq (response_headers resp) []
+      assert_eq (body_text resp) ""
+    })
+
+    test "bytes builds binary responses without a default content type" (fun () -> {
+      let resp = bytes 206 (BitString.from_string "abc")
+      assert_eq (response_status resp) 206
+      assert_eq (response_headers resp) []
+      assert_eq (body_text resp) "abc"
+    })
+
+    test "html and octet_stream set content types" (fun () -> {
+      let page = html 200 "<h1>Hello</h1>"
+      let blob = octet_stream 200 (BitString.from_string "abc")
+      assert_eq (header "content-type" page) (Just "text/html; charset=utf-8")
+      assert_eq (header "content-type" blob) (Just "application/octet-stream")
+    })
+
+    test "redirect sets Location and empty body" (fun () -> {
+      let resp = redirect 303 "/target"
+      assert_eq (response_status resp) 303
+      assert_eq (header "location" resp) (Just "/target")
+      assert_eq (body_text resp) ""
+    })
+
+    test "status preserves headers and body" (fun () -> {
+      let resp =
+        html 200 "created"
+        |> with_header "X-Trace" "abc"
+        |> status 201
+      assert_eq (response_status resp) 201
+      assert_eq (header "x-trace" resp) (Just "abc")
+      assert_eq (body_text resp) "created"
+    })
+
+    test "headers can be appended or replaced" (fun () -> {
+      let appended =
+        empty_response 200
+        |> with_header "X-Trace" "one"
+        |> with_headers [("X-Trace", "two"), ("X-Mode", "demo")]
+      assert_eq (response_headers appended) [
+        ("X-Trace", "one"),
+        ("X-Trace", "two"),
+        ("X-Mode", "demo"),
+      ]
+
+      let replaced =
+        appended
+        |> replace_header "x-trace" "three"
+        |> content_type "text/plain"
+      assert_eq (response_headers replaced) [
+        ("X-Mode", "demo"),
+        ("x-trace", "three"),
+        ("Content-Type", "text/plain"),
+      ]
+    })
+  })
+}

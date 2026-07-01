@@ -35,9 +35,13 @@ html status body = Response {
   body: Buffered body,
 }
 
+#@ Build an empty response with the given status.
+pub fun empty_response : Int -> Response
+empty_response code = Response { status: code, headers: [], body: Buffered "" }
+
 #@ A 204 response with an empty body.
 pub fun no_content : Response
-no_content = Response { status: 204, headers: [], body: Buffered "" }
+no_content = empty_response 204
 
 #@ Build a redirect response with the given status and Location.
 pub fun redirect : Int -> String -> Response
@@ -47,15 +51,33 @@ redirect status location = Response {
   body: Buffered "",
 }
 
+#@ Build a binary response without setting a default Content-Type.
+pub fun bytes : Int -> BitString -> Response
+bytes code body = Http.bytes code [] body
+
+#@ Replace the response status while preserving headers and body.
+pub fun status : Int -> Response -> Response
+status code resp = { resp | status: code }
+
 #@ Append a response header without removing existing values.
 pub fun with_header : String -> String -> Response -> Response
 with_header name value resp =
   { resp | headers: resp.headers <> [(name, value)] }
 
+#@ Append several response headers without removing existing values.
+pub fun with_headers : List (String, String) -> Response -> Response
+with_headers headers resp =
+  { resp | headers: resp.headers <> headers }
+
+#@ Set or replace a response header by name, case-insensitively.
+pub fun replace_header : String -> String -> Response -> Response
+replace_header name value resp =
+  { resp | headers: Http.replace_header name value resp.headers }
+
 #@ Set or replace the response Content-Type header.
 pub fun content_type : String -> Response -> Response
 content_type value resp =
-  { resp | headers: Http.replace_header "Content-Type" value resp.headers }
+  replace_header "Content-Type" value resp
 
 #@ Build a binary response with `application/octet-stream`.
 pub fun octet_stream : Int -> BitString -> Response

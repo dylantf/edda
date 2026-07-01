@@ -666,6 +666,14 @@ fun html : Int -> String -> Response
 
 Build an HTML response with `Content-Type: text/html; charset=utf-8`.
 
+### empty_response
+
+```saga
+fun empty_response : Int -> Response
+```
+
+Build an empty response with the given status.
+
 ### redirect
 
 ```saga
@@ -674,6 +682,22 @@ fun redirect : Int -> String -> Response
 
 Build a redirect response with the given status and `Location`.
 
+### bytes
+
+```saga
+fun bytes : Int -> BitString -> Response
+```
+
+Build a binary response without setting a default Content-Type.
+
+### status
+
+```saga
+fun status : Int -> Response -> Response
+```
+
+Replace the response status while preserving headers and body.
+
 ### with_header
 
 ```saga
@@ -681,6 +705,22 @@ fun with_header : String -> String -> Response -> Response
 ```
 
 Append a response header without removing existing values.
+
+### with_headers
+
+```saga
+fun with_headers : List (String, String) -> Response -> Response
+```
+
+Append several response headers without removing existing values.
+
+### replace_header
+
+```saga
+fun replace_header : String -> String -> Response -> Response
+```
+
+Set or replace a response header by name, case-insensitively.
 
 ### content_type
 

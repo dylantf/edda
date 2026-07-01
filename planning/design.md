@@ -521,9 +521,14 @@ replacement response system.
 Core response helpers now available:
 
 - `html : Int -> String -> Response`, setting `Content-Type: text/html; charset=utf-8`.
+- `empty_response : Int -> Response`, an arbitrary empty response.
 - `no_content : Response`, a 204 with an empty body.
 - `redirect : Int -> String -> Response`, setting `Location`.
+- `bytes : Int -> BitString -> Response`, without setting a default content type.
+- `status : Int -> Response -> Response`.
 - `with_header : String -> String -> Response -> Response`.
+- `with_headers : List (String, String) -> Response -> Response`.
+- `replace_header : String -> String -> Response -> Response`.
 - `content_type : String -> Response -> Response`.
 - `octet_stream : Int -> BitString -> Response`.
 - Cookie helpers: `set_cookie`, `set_cookie_with`, `delete_cookie`,
@@ -766,6 +771,8 @@ Current coverage:
   behavior.
 - `RequestTest`: query/form decoding, cookies, filename sanitizing, quoted
   multipart parameters, file parts, and multipart size limits.
+- `ResponseTest`: response constructors, status/header mutators, redirects,
+  HTML, and binary bodies.
 - `CorsTest`: CORS actual requests, preflight handling, disallowed origins,
   exposed headers, and credentialed wildcard origin echoing.
 - `SpecTest`: typed `SchemaFor` witnesses render into OpenAPI response schemas.
