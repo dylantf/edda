@@ -6,7 +6,7 @@ main = "src/Main.saga"
 
 [library]
 module = "Edda"
-expose = ["Edda", "Edda.Json", "Edda.Spec"]
+expose = ["Edda", "Edda.Crypto", "Edda.Json", "Edda.Spec"]
 
 [deps]
 saga_http = { path = "../saga_http" }

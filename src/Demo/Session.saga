@@ -1,8 +1,7 @@
 module Demo.Session
 
-# Cookie-backed toy session demo. This intentionally stores a raw username in
-# a cookie so the request/response cookie helpers are easy to see in action.
-# Real session cookies should be signed or backed by server-side storage.
+# Cookie-backed toy session demo. The username is visible to the browser, but
+# signed so the browser cannot alter it without invalidating the cookie.
 
 import Edda (
   Request,
@@ -12,22 +11,30 @@ import Edda (
   choose,
   html,
   redirect,
-  cookie,
   form_value,
-  set_cookie_with,
   delete_cookie_with,
   default_cookie_options,
   CookieOptions,
   RequestParserConfig
 )
+import Edda.Crypto (CookieSecret, cookie_secret, signed_cookie, set_signed_cookie_with)
 import SagaHttp.Http (Response)
 
 fun session_cookie_name : String
 session_cookie_name = "edda_demo_user"
 
+fun session_secret : CookieSecret
+session_secret = cookie_secret "edda demo development secret"
+
 fun session_cookie_options : CookieOptions
 session_cookie_options =
   { default_cookie_options | path: Just "/session", http_only: True }
+
+fun session_user : Request -> Maybe String
+session_user req = case signed_cookie session_secret session_cookie_name req {
+  Ok username -> Just username
+  Err _ -> Nothing
+}
 
 fun escape_html : String -> String
 escape_html value =
@@ -110,13 +117,13 @@ secret_page username = {
 }
 
 fun show_session : Request -> Response
-show_session req = case cookie session_cookie_name req {
+show_session req = case session_user req {
   Just username -> html 200 (signed_in_page username)
   Nothing -> html 200 (login_form Nothing)
 }
 
 fun show_secret : Request -> Response
-show_secret req = case cookie session_cookie_name req {
+show_secret req = case session_user req {
   Just username -> html 200 (secret_page username)
   Nothing -> redirect 303 "/session"
 }
@@ -125,7 +132,7 @@ fun login : Request -> Response needs {RequestParserConfig}
 login req = case form_value "username" req {
   Ok (Just username) ->
     redirect 303 "/session"
-    |> set_cookie_with session_cookie_name username session_cookie_options
+    |> set_signed_cookie_with session_secret session_cookie_name username session_cookie_options
   Ok Nothing -> html 400 (login_form (Just "Username is required."))
   Err _ -> html 400 (login_form (Just "Could not decode the submitted form."))
 }

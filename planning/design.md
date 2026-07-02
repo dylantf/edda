@@ -794,7 +794,6 @@ Remaining multipart polish:
 Security policy should stay explicit and composable, mostly as response/request
 helpers or wrap functions rather than router magic. Likely useful slices:
 
-- Signed cookies, built on top of the existing cookie helpers.
 - Secure cookie defaults for session-style cookies.
 - CSRF helpers for form apps.
 - Security headers wrapper for common headers such as HSTS,
@@ -802,6 +801,26 @@ helpers or wrap functions rather than router magic. Likely useful slices:
 
 These should be opt-in. Edda should avoid pretending one default security policy
 fits every app.
+
+Signed cookies now live in `Edda.Crypto` as the first security helper. The
+module has two layers:
+
+- low-level primitives from `Std.Crypto`, re-exported for convenience:
+  `hmac_sha256`, `base64url_encode`, `base64url_decode`, and `secure_equal`;
+- Edda policy helpers: opaque `CookieSecret`, `sign_cookie_value`,
+  `verify_cookie_value`, `signed_cookie`, `set_signed_cookie`, and
+  `set_signed_cookie_with`.
+
+Signed cookies provide integrity, not secrecy. The current format is:
+
+```text
+s:<base64url(value)>.<base64url(hmac_sha256(secret, "s:" <> base64url(value)))>
+```
+
+The session demo now uses signed cookies with a development-only secret. Real
+apps should load a high-entropy secret from configuration. Key rotation is not
+implemented yet; the likely next shape is a `CookieSecrets` record with a
+current signing key and previous verification keys.
 
 ### Content negotiation
 

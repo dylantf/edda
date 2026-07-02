@@ -1,0 +1,111 @@
+module Edda.Crypto
+
+import Std.BitString
+import Std.Crypto (
+  pub hmac_sha256,
+  pub base64url_encode,
+  pub base64url_decode,
+  pub secure_equal
+)
+import Std.String
+import Edda.Request (Request, cookie)
+import Edda.Response (CookieOptions, default_cookie_options, set_cookie_with)
+import SagaHttp.Http (Response)
+
+#@ Opaque signing secret used for signed cookie values.
+opaque type CookieSecret =
+  | CookieSecret BitString
+
+#@ Errors returned while reading or verifying a signed cookie.
+pub type SignedCookieError =
+  | SignedCookieMissing String
+  | SignedCookieBadFormat
+  | SignedCookieBadSignature
+  | SignedCookieValueNotUtf8
+  deriving (Debug, Eq)
+
+#@ Build a cookie signing secret from a UTF-8 string.
+#@
+#@ Use a high-entropy random value from configuration in real applications.
+pub fun cookie_secret : String -> CookieSecret
+cookie_secret value = CookieSecret (BitString.from_string value)
+
+#@ Build a cookie signing secret from raw bytes.
+pub fun cookie_secret_bytes : BitString -> CookieSecret
+cookie_secret_bytes value = CookieSecret value
+
+#@ Sign a cookie value. The result is cookie-safe but not encrypted.
+pub fun sign_cookie_value : CookieSecret -> String -> String
+sign_cookie_value (CookieSecret key) value = {
+  let encoded = base64url_encode (BitString.from_string value)
+  let payload = signed_payload encoded
+  let signature = base64url_encode (hmac_sha256 key (BitString.from_string payload))
+  payload <> "." <> signature
+}
+
+#@ Verify a signed cookie value and return the original unsigned value.
+pub fun verify_cookie_value : CookieSecret
+  -> String
+  -> Result String SignedCookieError
+verify_cookie_value (CookieSecret key) signed = case String.strip_prefix "s:" signed {
+  Just rest -> case String.split "." rest {
+    [encoded, signature] -> verify_cookie_parts key encoded signature
+    _ -> Err SignedCookieBadFormat
+  }
+  Nothing -> Err SignedCookieBadFormat
+}
+
+#@ Read and verify a named cookie from the request.
+pub fun signed_cookie : CookieSecret
+  -> String
+  -> Request
+  -> Result String SignedCookieError
+signed_cookie secret name req = case cookie name req {
+  Just value -> verify_cookie_value secret value
+  Nothing -> Err (SignedCookieMissing name)
+}
+
+#@ Add a signed cookie using default cookie options.
+pub fun set_signed_cookie : CookieSecret
+  -> String
+  -> String
+  -> Response
+  -> Response
+set_signed_cookie secret name value resp =
+  set_signed_cookie_with secret name value default_cookie_options resp
+
+#@ Add a signed cookie using explicit cookie options.
+pub fun set_signed_cookie_with : CookieSecret
+  -> String
+  -> String
+  -> CookieOptions
+  -> Response
+  -> Response
+set_signed_cookie_with secret name value options resp =
+  set_cookie_with name (sign_cookie_value secret value) options resp
+
+fun verify_cookie_parts : BitString
+  -> String
+  -> String
+  -> Result String SignedCookieError
+verify_cookie_parts key encoded signature = case base64url_decode signature {
+  Ok actual_signature -> {
+    let payload = signed_payload encoded
+    let expected_signature = hmac_sha256 key (BitString.from_string payload)
+    if secure_equal expected_signature actual_signature then decode_signed_value encoded
+    else Err SignedCookieBadSignature
+  }
+  Err _ -> Err SignedCookieBadFormat
+}
+
+fun decode_signed_value : String -> Result String SignedCookieError
+decode_signed_value encoded = case base64url_decode encoded {
+  Ok bytes -> case BitString.to_string bytes {
+    Ok value -> Ok value
+    Err _ -> Err SignedCookieValueNotUtf8
+  }
+  Err _ -> Err SignedCookieBadFormat
+}
+
+fun signed_payload : String -> String
+signed_payload encoded = "s:" <> encoded

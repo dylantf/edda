@@ -1,0 +1,93 @@
+module CryptoTest
+
+import Std.BitString
+import Std.String
+import Std.Test (Testing, describe, test, assert_eq, assert_true)
+import Edda (
+  Request,
+  GET,
+  empty_response
+)
+import Edda.Crypto (
+  SignedCookieError,
+  cookie_secret,
+  hmac_sha256,
+  base64url_encode,
+  base64url_decode,
+  secure_equal,
+  sign_cookie_value,
+  verify_cookie_value,
+  signed_cookie,
+  set_signed_cookie
+)
+import SagaHttp.Http as Http (Response)
+
+fun req_with_cookie : String -> String -> Request
+req_with_cookie name value = Request {
+  method: GET,
+  path: "/",
+  original_path: "/",
+  query: Nothing,
+  matches: [],
+  params: [],
+  headers: [("Cookie", name <> "=" <> value)],
+  body: Nothing,
+}
+
+fun header : String -> Response -> Maybe String
+header name response = Http.find_header name response.headers
+
+fun signed_cookie_header_value : String -> Response -> Maybe String
+signed_cookie_header_value name resp = case header "set-cookie" resp {
+  Just value -> String.strip_prefix (name <> "=") value
+  Nothing -> Nothing
+}
+
+pub fun tests : Unit -> Unit needs {Testing}
+tests () = {
+  describe "Edda.Crypto" (fun () -> {
+    test "base64url encodes without padding and decodes" (fun () -> {
+      let encoded = base64url_encode (BitString.from_string "hello?")
+      assert_eq encoded "aGVsbG8_"
+      case base64url_decode encoded {
+        Ok bytes -> assert_eq (BitString.to_string bytes) (Ok "hello?")
+        Err _ -> assert_true False
+      }
+      assert_eq (base64url_decode "a") (Err "invalid_base64url")
+    })
+
+    test "hmac output compares with secure_equal" (fun () -> {
+      let key = BitString.from_string "secret"
+      let a = hmac_sha256 key (BitString.from_string "one")
+      let b = hmac_sha256 key (BitString.from_string "one")
+      let c = hmac_sha256 key (BitString.from_string "two")
+      assert_true (secure_equal a b)
+      assert_eq (secure_equal a c) False
+    })
+
+    test "signed cookie values round-trip and reject tampering" (fun () -> {
+      let secret = cookie_secret "test secret"
+      let signed = sign_cookie_value secret "user=123"
+      assert_true (String.starts_with "s:" signed)
+      assert_eq (verify_cookie_value secret signed) (Ok "user=123")
+      assert_eq (verify_cookie_value secret (signed <> "x")) (Err SignedCookieBadSignature)
+    })
+
+    test "signed_cookie reads a request cookie" (fun () -> {
+      let secret = cookie_secret "test secret"
+      let signed = sign_cookie_value secret "alice"
+      let req = req_with_cookie "session" signed
+      assert_eq (signed_cookie secret "session" req) (Ok "alice")
+      assert_eq (signed_cookie secret "missing" req) (Err (SignedCookieMissing "missing"))
+    })
+
+    test "set_signed_cookie writes a verifiable Set-Cookie header" (fun () -> {
+      let secret = cookie_secret "test secret"
+      let resp = set_signed_cookie secret "session" "alice" (empty_response 200)
+      case signed_cookie_header_value "session" resp {
+        Just value -> assert_eq (verify_cookie_value secret value) (Ok "alice")
+        Nothing -> assert_true False
+      }
+    })
+  })
+}
