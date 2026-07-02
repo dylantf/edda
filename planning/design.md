@@ -703,7 +703,8 @@ Buffered static files are now in core:
 
 - `file_response : String -> Response needs {File}` serves a known filesystem
   path with inferred content type. Buffered file responses emit
-  `Content-Length`, a weak `ETag`, and `Accept-Ranges: bytes`.
+  `Content-Length`, a weak `ETag`, `Last-Modified`, and
+  `Accept-Ranges: bytes`.
 - `file_response_with_headers : List (String, String) -> String -> Response needs {File}`
   serves a known filesystem path with inferred content type and extra response
   headers.
@@ -716,8 +717,9 @@ Buffered static files are now in core:
   serves files from a root directory under a URL prefix. It decodes `%XX` path
   segments and rejects traversal (`.`, `..`, decoded slashes, and backslashes).
   It accepts `GET` and `HEAD`, stripping the response body for `HEAD`. It also
-  handles `If-None-Match`, single `Range: bytes=...` requests, and `If-Range`
-  against the generated weak ETag.
+  handles `If-None-Match`, `If-Modified-Since`, single `Range: bytes=...`
+  requests, and `If-Range` against the generated weak ETag or
+  `Last-Modified` date.
 - `static_dir_with : StaticOptions -> String -> String -> Request -> Response needs {Skip, File}`
   adds explicit static-directory policy. `StaticOptions` currently supports an
   optional `Cache-Control` value and optional root index file. The default
@@ -726,10 +728,8 @@ Buffered static files are now in core:
 MIME detection covers common text, image, font, audio, video, archive, and web
 asset extensions, falling back to `application/octet-stream`.
 
-Still worth adding: metadata-backed `Last-Modified` and `If-Modified-Since`
-once `Std.File` exposes file metadata, multi-range responses if we need them,
-and maybe richer index-file fallback policy. Directory listings remain out of
-scope.
+Still worth adding: multi-range responses if we need them, and maybe richer
+index-file fallback policy. Directory listings remain out of scope.
 
 ### Streaming files and large responses
 

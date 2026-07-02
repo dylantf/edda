@@ -1,6 +1,8 @@
 module Edda.Static
 
 import Std.BitString
+import Std.DateTime (NaiveDateTime)
+import Std.DateTime as DateTime
 import Std.File (File)
 import Std.File as File
 import Std.Int
@@ -66,10 +68,10 @@ pub fun file_response_as_with_headers : List (String, String)
   -> String
   -> Response
   needs {File}
-file_response_as_with_headers headers content_type path = case File.read! path {
+file_response_as_with_headers headers content_type path = case File.read_bytes! path {
   Ok body -> {
-    let body_bytes = BitString.from_string body
-    Http.bytes 200 (static_response_headers content_type headers body_bytes) body_bytes
+    let modified = file_modified path
+    Http.bytes 200 (static_response_headers content_type headers body modified) body
   }
   Err File.NotFound -> not_found
   Err File.NotDirectory -> not_found
@@ -120,15 +122,16 @@ fun static_file_response_as : StaticOptions
   -> String
   -> Response
   needs {File}
-static_file_response_as options req content_type path = case File.read! path {
+static_file_response_as options req content_type path = case File.read_bytes! path {
   Ok body -> {
-    let body_bytes = BitString.from_string body
-    let etag = static_etag body_bytes
-    if if_none_match_matches etag req then not_modified_response (static_headers options) etag
-    else case range_response req content_type (static_headers options) body_bytes etag {
+    let modified = file_modified path
+    let etag = static_etag body
+    if if_none_match_matches etag req then not_modified_response (static_headers options) etag modified
+    else if can_use_if_modified_since req && if_modified_since_matches modified req then not_modified_response (static_headers options) etag modified
+    else case range_response req content_type (static_headers options) body etag modified {
       Just resp -> resp
       Nothing ->
-        Http.bytes 200 (static_response_headers content_type (static_headers options) body_bytes) body_bytes
+        Http.bytes 200 (static_response_headers content_type (static_headers options) body modified) body
     }
   }
   Err File.NotFound -> not_found
@@ -144,23 +147,39 @@ static_headers options = case options.cache_control {
   Nothing -> []
 }
 
+fun file_modified : String -> Maybe NaiveDateTime needs {File}
+file_modified path = case File.info! path {
+  Ok info -> Just info.modified
+  Err _ -> Nothing
+}
+
 fun static_response_headers : String
   -> List (String, String)
   -> BitString
+  -> Maybe NaiveDateTime
   -> List (String, String)
-static_response_headers content_type extra body = [
+static_response_headers content_type extra body modified = [
   ("Content-Type", content_type),
   ("Content-Length", show (BitString.size body)),
   ("ETag", static_etag body),
   ("Accept-Ranges", "bytes"),
-] <> extra
+] <> last_modified_headers modified <> extra
 
-fun not_modified_response : List (String, String) -> String -> Response
-not_modified_response extra etag = Response {
+fun not_modified_response : List (String, String) -> String -> Maybe NaiveDateTime -> Response
+not_modified_response extra etag modified = Response {
   status: 304,
-  headers: [("ETag", etag)] <> extra,
+  headers: [("ETag", etag)] <> last_modified_headers modified <> extra,
   body: Buffered "",
 }
+
+fun last_modified_headers : Maybe NaiveDateTime -> List (String, String)
+last_modified_headers modified = case modified {
+  Just dt -> [("Last-Modified", http_date dt)]
+  Nothing -> []
+}
+
+fun http_date : NaiveDateTime -> String
+http_date dt = DateTime.format "%a, %d %b %Y %T GMT" dt
 
 fun without_body : Response -> Response
 without_body resp = { resp | body: Buffered "" }
@@ -178,10 +197,11 @@ fun range_response : Request
   -> List (String, String)
   -> BitString
   -> String
+  -> Maybe NaiveDateTime
   -> Maybe Response
-range_response req content_type extra body etag = case header "range" req {
+range_response req content_type extra body etag modified = case header "range" req {
   Just raw ->
-    if if_range_allows etag req then {
+    if if_range_allows etag modified req then {
       case parse_range_header (BitString.size body) raw {
         RangeOk (StaticRange start finish) -> {
           let len = finish - start + 1
@@ -192,14 +212,14 @@ range_response req content_type extra body etag = case header "range" req {
             ("ETag", etag),
             ("Accept-Ranges", "bytes"),
             ("Content-Range", $"bytes {start}-{finish}/{BitString.size body}"),
-          ] <> extra) range_body)
+          ] <> last_modified_headers modified <> extra) range_body)
         }
         RangeUnsatisfiable -> Just (Response {
           status: 416,
           headers: [
             ("Content-Range", $"bytes */{BitString.size body}"),
             ("Accept-Ranges", "bytes"),
-          ] <> extra,
+          ] <> last_modified_headers modified <> extra,
           body: Buffered "",
         })
         RangeInvalid -> Nothing
@@ -209,10 +229,45 @@ range_response req content_type extra body etag = case header "range" req {
   Nothing -> Nothing
 }
 
-fun if_range_allows : String -> Request -> Bool
-if_range_allows etag req = case header "if-range" req {
+fun if_range_allows : String -> Maybe NaiveDateTime -> Request -> Bool
+if_range_allows etag modified req = case header "if-range" req {
   Nothing -> True
-  Just value -> etag_values_match etag value
+  Just value ->
+    if etag_values_match etag value then True
+    else date_validator_allows modified value
+}
+
+fun can_use_if_modified_since : Request -> Bool
+can_use_if_modified_since req =
+  List.is_empty (header_values "if-none-match" req)
+
+fun if_modified_since_matches : Maybe NaiveDateTime -> Request -> Bool
+if_modified_since_matches modified req = case header "if-modified-since" req {
+  Just value -> date_validator_allows modified value
+  Nothing -> False
+}
+
+fun date_validator_allows : Maybe NaiveDateTime -> String -> Bool
+date_validator_allows modified value = case modified {
+  Just dt -> case parse_http_date value {
+    Just since -> dt <= since
+    Nothing -> False
+  }
+  Nothing -> False
+}
+
+fun parse_http_date : String -> Maybe NaiveDateTime
+parse_http_date value = {
+  let trimmed = String.trim value
+  let tail = case String.split ", " trimmed {
+    [_weekday, rest] -> rest
+    [rest] -> rest
+    _ -> trimmed
+  }
+  case DateTime.parse "%d %b %Y %T GMT" tail {
+    Ok dt -> Just dt
+    Err _ -> Nothing
+  }
 }
 
 fun parse_range_header : Int -> String -> StaticRangeResult

@@ -72,6 +72,10 @@ tests () = {
         Just _ -> assert_true True
         Nothing -> assert_true False
       }
+      case header "last-modified" resp {
+        Just value -> assert_true (String.ends_with " GMT" value)
+        Nothing -> assert_true False
+      }
       assert_true (body_size resp > 0)
     })
 
@@ -108,6 +112,24 @@ tests () = {
             static_dir "/docs" "docs" request)
           assert_eq second.status 304
           assert_eq (header "etag" second) (Just etag)
+          assert_eq (body_size second) 0
+        }
+        Nothing -> assert_true False
+      }
+    })
+
+    test "static_dir returns 304 for matching If-Modified-Since" (fun () -> {
+      let first = run_static (fun () ->
+        static_dir "/docs" "docs" (req GET "/docs/guide.json"))
+      case header "last-modified" first {
+        Just last_modified -> {
+          let request =
+            req GET "/docs/guide.json"
+              |> with_header "If-Modified-Since" last_modified
+          let second = run_static (fun () ->
+            static_dir "/docs" "docs" request)
+          assert_eq second.status 304
+          assert_eq (header "last-modified" second) (Just last_modified)
           assert_eq (body_size second) 0
         }
         Nothing -> assert_true False

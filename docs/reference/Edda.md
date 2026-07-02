@@ -896,7 +896,7 @@ fun file_response : String -> Response needs {File}
 
 Serve a specific filesystem path as a buffered response. The content type is
 inferred from the file extension. The response includes `Content-Length`, a
-weak `ETag`, and `Accept-Ranges: bytes`.
+weak `ETag`, `Last-Modified`, and `Accept-Ranges: bytes`.
 
 ### file_response_with_headers
 
@@ -936,7 +936,8 @@ remaining path is percent-decoded, and unsafe segments (`.`, `..`, decoded
 slashes, and backslashes) are rejected. `GET` returns the file body; `HEAD`
 returns the same headers without a body. Directory-root requests use
 `default_static_options`. Static directory responses handle `If-None-Match`,
-single byte ranges, and `If-Range` against the generated weak ETag.
+`If-Modified-Since`, single byte ranges, and `If-Range` against the generated
+weak ETag or `Last-Modified` date.
 
 ### static_dir_with
 
