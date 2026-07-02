@@ -1,0 +1,22 @@
+module Edda.Middleware
+
+import Edda.Request (Request)
+import SagaHttp.Http (Response)
+
+#@ Transform the request before passing it to a handler.
+pub fun map_request : (Request -> Request)
+  -> (Request -> Response needs {..e})
+  -> Request
+  -> Response
+  needs {..e}
+map_request f inner req =
+  inner (f req)
+
+#@ Transform the response produced by a handler.
+pub fun map_response : (Response -> Response)
+  -> (Request -> Response needs {..e})
+  -> Request
+  -> Response
+  needs {..e}
+map_response f inner req =
+  f (inner req)

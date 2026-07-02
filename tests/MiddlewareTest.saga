@@ -1,0 +1,60 @@
+module MiddlewareTest
+
+import Std.Test (Testing, describe, test, assert_eq)
+import Edda (
+  Request,
+  Method,
+  GET,
+  map_request,
+  map_response,
+  with_header
+)
+import SagaHttp.Http as Http (Response)
+
+fun req : Method -> String -> Request
+req method path = Request {
+  method: method,
+  path: path,
+  original_path: path,
+  query: Nothing,
+  matches: [],
+  params: [],
+  headers: [],
+  body: Nothing,
+}
+
+fun body_text : Response -> String
+body_text resp = case resp.body {
+  Http.Buffered text -> text
+  _ -> "<<non-text response>>"
+}
+
+fun header : String -> Response -> Maybe String
+header name response = Http.find_header name response.headers
+
+fun path_app : Request -> Response
+path_app request = Http.text 200 request.path
+
+pub fun tests : Unit -> Unit needs {Testing}
+tests () = {
+  describe "Middleware helpers" (fun () -> {
+    test "map_request transforms requests before the handler runs" (fun () -> {
+      let app =
+        path_app
+        |> map_request (fun request -> { request | path: "/rewritten" })
+      let resp = app (req GET "/original")
+      assert_eq resp.status 200
+      assert_eq (body_text resp) "/rewritten"
+    })
+
+    test "map_response transforms handler responses" (fun () -> {
+      let app =
+        path_app
+        |> map_response (with_header "X-Middleware" "seen")
+      let resp = app (req GET "/resource")
+      assert_eq resp.status 200
+      assert_eq (body_text resp) "/resource"
+      assert_eq (header "x-middleware" resp) (Just "seen")
+    })
+  })
+}

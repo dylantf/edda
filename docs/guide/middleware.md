@@ -44,6 +44,18 @@ application:
 with_logging (with_panic_recovery app) req
 ```
 
+For the two most common pure wrapping cases, Edda provides small helpers:
+
+```saga
+let app =
+  inner
+  |> map_request normalize_path
+  |> map_response (with_header "X-Frame-Options" "DENY")
+```
+
+`map_request` rewrites the `Request` before the inner handler runs.
+`map_response` rewrites the `Response` after the inner handler returns.
+
 Edda ships `with_cors` as one of these wraps:
 
 ```saga
@@ -179,10 +191,32 @@ current user, request id, parsed JWT claims, feature-flag set,
 anything that's "the same for this request, different across
 requests."
 
-You'll write your own boundary function (instead of using
-`to_handler`) when you need this — Edda doesn't try to provide a
-one-liner for it, since the shape of per-request state varies too
-much app to app.
+You can install the context at the root boundary, or at a mounted
+sub-app boundary. The session demo uses this to parse the signed
+session cookie once for `/session` and provide it through a local
+effect:
+
+```saga
+effect SessionContext {
+  fun current_session_user : Unit -> Maybe String
+}
+
+fun secret : Request -> Response needs {SessionContext}
+secret _ = case current_session_user! () {
+  Just user -> text 200 $"welcome {user}"
+  Nothing -> redirect 303 "/session"
+}
+
+fun app req =
+  choose [
+    route GET "/secret" secret,
+  ] req with {
+    current_session_user () = resume (session_user req)
+  }
+```
+
+This keeps `Request` lean: the parsed value is available to routes
+that opt in, but it is not baked into every request record.
 
 ## The smell test
 

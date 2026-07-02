@@ -20,6 +20,10 @@ import Edda (
 import Edda.Crypto (CookieSecret, cookie_secret, signed_cookie, set_signed_cookie_with)
 import SagaHttp.Http (Response)
 
+effect SessionContext {
+  fun current_session_user : Unit -> Maybe String
+}
+
 fun session_cookie_name : String
 session_cookie_name = "edda_demo_user"
 
@@ -116,14 +120,14 @@ secret_page username = {
     """
 }
 
-fun show_session : Request -> Response
-show_session req = case session_user req {
+fun show_session : Request -> Response needs {SessionContext}
+show_session _ = case current_session_user! () {
   Just username -> html 200 (signed_in_page username)
   Nothing -> html 200 (login_form Nothing)
 }
 
-fun show_secret : Request -> Response
-show_secret req = case session_user req {
+fun show_secret : Request -> Response needs {SessionContext}
+show_secret _ = case current_session_user! () {
   Just username -> html 200 (secret_page username)
   Nothing -> redirect 303 "/session"
 }
@@ -143,10 +147,13 @@ logout _ =
   |> delete_cookie_with session_cookie_name session_cookie_options
 
 pub fun app : Request -> Response needs {RequestParserConfig}
-app req =
+app req = {
   choose [
     route GET "/" show_session,
     route GET "/secret" show_secret,
     route POST "/login" login,
     route POST "/logout" logout,
-  ] req
+  ] req with {
+    current_session_user () = resume (session_user req)
+  }
+}

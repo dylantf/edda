@@ -160,6 +160,25 @@ Saga records cannot carry effect rows, so a route can't be a record of
 `{ method, path, handler }`. Function types **can** carry rows, so routes
 are functions composed via combinators in the Giraffe/Hono style.
 
+Middleware remains ordinary function composition, not a separate stack type.
+Small helpers cover the pure cases:
+
+```saga
+app
+|> map_request rewrite_request
+|> map_response add_common_headers
+```
+
+Anything with custom control flow, short-circuiting, request-scoped context, or
+typed capabilities should stay as a normal wrapper function or Saga effect
+handler at the relevant boundary.
+
+Request-scoped context should be modeled as local effects installed at the app
+or sub-app boundary. The session demo now parses the signed session cookie at
+the `/session` boundary and exposes it through `SessionContext`, keeping
+session state out of `Request` while still making authenticated routes explicit
+in their `needs` row.
+
 ### The `Skip` effect
 
 A route handler is a function that either produces a response or signals
