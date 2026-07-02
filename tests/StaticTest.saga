@@ -1,0 +1,80 @@
+module StaticTest
+
+import Std.BitString
+import Std.File (File, fs)
+import Std.String
+import Std.Test (Testing, describe, test, assert_eq, assert_true)
+import Edda (
+  Request,
+  Method,
+  GET,
+  HEAD,
+  default_static_options,
+  static_dir,
+  static_dir_with,
+  Skip
+)
+import SagaHttp.Http as Http (Response)
+
+fun req : Method -> String -> Request
+req method path = Request {
+  method: method,
+  path: path,
+  original_path: path,
+  query: Nothing,
+  matches: [],
+  params: [],
+  headers: [],
+  body: Nothing,
+}
+
+fun run_static : (Unit -> Response needs {Skip, File}) -> Response
+run_static run = run () with {
+  fs,
+  skip () = Http.text 599 "skipped",
+  method_not_allowed _ = Http.text 598 "method not allowed",
+}
+
+fun header : String -> Response -> Maybe String
+header name response = Http.find_header name response.headers
+
+fun body_size : Response -> Int
+body_size resp = case resp.body {
+  Http.Buffered text -> String.length text
+  Http.BufferedBytes body -> BitString.size body
+  _ -> -1
+}
+
+pub fun tests : Unit -> Unit needs {Testing}
+tests () = {
+  describe "Static files" (fun () -> {
+    test "static_dir serves GET files with inferred content type" (fun () -> {
+      let resp = run_static (fun () ->
+        static_dir "/static" "src/static" (req GET "/static/cats/cat1.jpg"))
+      assert_eq resp.status 200
+      assert_eq (header "content-type" resp) (Just "image/jpeg")
+      assert_true (body_size resp > 0)
+    })
+
+    test "static_dir serves HEAD files without a body" (fun () -> {
+      let resp = run_static (fun () ->
+        static_dir "/static" "src/static" (req HEAD "/static/cats/cat1.jpg"))
+      assert_eq resp.status 200
+      assert_eq (header "content-type" resp) (Just "image/jpeg")
+      assert_eq (body_size resp) 0
+    })
+
+    test "static_dir_with can serve an index file and cache header" (fun () -> {
+      let options =
+        { default_static_options |
+          cache_control: Just "public, max-age=60",
+          index_file: Just "guide.json",
+        }
+      let resp = run_static (fun () ->
+        static_dir_with options "/docs" "docs" (req GET "/docs"))
+      assert_eq resp.status 200
+      assert_eq (header "content-type" resp) (Just "application/json")
+      assert_eq (header "cache-control" resp) (Just "public, max-age=60")
+    })
+  })
+}

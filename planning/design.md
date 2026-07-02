@@ -703,15 +703,26 @@ Buffered static files are now in core:
 
 - `file_response : String -> Response needs {File}` serves a known filesystem
   path with inferred content type.
+- `file_response_with_headers : List (String, String) -> String -> Response needs {File}`
+  serves a known filesystem path with inferred content type and extra response
+  headers.
 - `file_response_as : String -> String -> Response needs {File}` serves a known
   filesystem path with an explicit content type.
+- `file_response_as_with_headers : List (String, String) -> String -> String -> Response needs {File}`
+  serves a known filesystem path with an explicit content type and extra
+  response headers.
 - `static_dir : String -> String -> Request -> Response needs {Skip, File}`
   serves files from a root directory under a URL prefix. It decodes `%XX` path
   segments and rejects traversal (`.`, `..`, decoded slashes, and backslashes).
+  It accepts `GET` and `HEAD`, stripping the response body for `HEAD`.
+- `static_dir_with : StaticOptions -> String -> String -> Request -> Response needs {Skip, File}`
+  adds explicit static-directory policy. `StaticOptions` currently supports an
+  optional `Cache-Control` value and optional root index file. The default
+  policy tries `index.html` and emits no cache header.
 
-Still worth adding: broader MIME detection, cache headers, conditional
-requests (`ETag`, `If-None-Match`, `Last-Modified`), range requests, and maybe
-index-file policy. Directory listings remain out of scope.
+Still worth adding: broader MIME detection, conditional requests (`ETag`,
+`If-None-Match`, `Last-Modified`), range requests, and maybe richer index-file
+fallback policy. Directory listings remain out of scope.
 
 ### Streaming files and large responses
 

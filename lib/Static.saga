@@ -7,11 +7,12 @@ import Std.List
 import Std.String
 import Edda.Request (
   Request,
-  GET
+  GET,
+  HEAD
 )
 import Edda.Router (Skip)
 import Edda.Response (not_found)
-import SagaHttp.Http as Http (Response, text)
+import SagaHttp.Http as Http (Response, ResponseBody, text)
 
 #@ Errors from decoding and validating a static request path.
 pub type StaticPathError =
@@ -20,18 +21,50 @@ pub type StaticPathError =
   | UnsafeStaticPathSegment String
   deriving (Debug, Eq)
 
+#@ Options for serving a static directory.
+pub record StaticOptions {
+  cache_control: Maybe String,
+  index_file: Maybe String,
+}
+
+#@ Default static-directory policy: try `index.html` for the directory root
+#@ and emit no cache header.
+pub fun default_static_options : StaticOptions
+default_static_options = StaticOptions {
+  cache_control: Nothing,
+  index_file: Just "index.html",
+}
+
 #@ Serve a specific filesystem path as a buffered response.
 #@
 #@ The content type is inferred from the file extension.
 pub fun file_response : String -> Response needs {File}
 file_response path =
-  file_response_as (content_type_for_path path) path
+  file_response_with_headers [] path
+
+#@ Serve a specific filesystem path as a buffered response with extra headers.
+pub fun file_response_with_headers : List (String, String)
+  -> String
+  -> Response
+  needs {File}
+file_response_with_headers headers path =
+  file_response_as_with_headers headers (content_type_for_path path) path
 
 #@ Serve a specific filesystem path as a buffered response with an explicit
 #@ content type.
 pub fun file_response_as : String -> String -> Response needs {File}
-file_response_as content_type path = case File.read! path {
-  Ok body -> Http.bytes 200 [("Content-Type", content_type)] (BitString.from_string body)
+file_response_as content_type path =
+  file_response_as_with_headers [] content_type path
+
+#@ Serve a specific filesystem path as a buffered response with an explicit
+#@ content type and extra headers.
+pub fun file_response_as_with_headers : List (String, String)
+  -> String
+  -> String
+  -> Response
+  needs {File}
+file_response_as_with_headers headers content_type path = case File.read! path {
+  Ok body -> Http.bytes 200 ([("Content-Type", content_type)] <> headers) (BitString.from_string body)
   Err File.NotFound -> not_found
   Err File.NotDirectory -> not_found
   Err File.IsDirectory -> not_found
@@ -45,10 +78,23 @@ file_response_as content_type path = case File.read! path {
 #@ unsafe segments (`.`, `..`, decoded slashes, and backslashes) are rejected.
 pub fun static_dir : String -> String -> Request -> Response needs {Skip, File}
 static_dir url_prefix root req =
-  if req.method == GET then {
+  static_dir_with default_static_options url_prefix root req
+
+#@ Serve files from `root` under `url_prefix` with explicit static options.
+pub fun static_dir_with : StaticOptions
+  -> String
+  -> String
+  -> Request
+  -> Response
+  needs {Skip, File}
+static_dir_with options url_prefix root req =
+  if req.method == GET || req.method == HEAD then {
     case match_prefix (path_segments url_prefix) (path_segments req.path) {
-      Just remaining -> case static_path root remaining {
-        Ok path -> file_response path
+      Just remaining -> case static_path options root remaining {
+        Ok path -> {
+          let resp = file_response_with_headers (static_headers options) path
+          if req.method == HEAD then without_body resp else resp
+        }
         Err (InvalidStaticPercentEscape _) -> text 400 "bad static path"
         Err InvalidStaticPathUtf8 -> text 400 "bad static path"
         Err (UnsafeStaticPathSegment _) -> text 403 "forbidden"
@@ -58,11 +104,28 @@ static_dir url_prefix root req =
   }
   else skip! ()
 
-fun static_path : String -> List String -> Result String StaticPathError
-static_path root raw_segments = case decode_segments raw_segments [] {
-  Ok [] -> Err (UnsafeStaticPathSegment "")
+fun static_headers : StaticOptions -> List (String, String)
+static_headers options = case options.cache_control {
+  Just value -> [("Cache-Control", value)]
+  Nothing -> []
+}
+
+fun without_body : Response -> Response
+without_body resp = { resp | body: Buffered "" }
+
+fun static_path : StaticOptions -> String -> List String -> Result String StaticPathError
+static_path options root raw_segments = case decode_segments raw_segments [] {
+  Ok [] -> index_path options root
   Ok segments -> Ok (join_path root (String.join "/" segments))
   Err e -> Err e
+}
+
+fun index_path : StaticOptions -> String -> Result String StaticPathError
+index_path options root = case options.index_file {
+  Just name ->
+    if safe_segment name then Ok (join_path root name)
+    else Err (UnsafeStaticPathSegment name)
+  Nothing -> Err (UnsafeStaticPathSegment "")
 }
 
 fun decode_segments : List String -> List String -> Result (List String) StaticPathError

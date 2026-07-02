@@ -274,6 +274,19 @@ type StaticPathError =
 
 Errors from decoding and validating a static request path.
 
+### StaticOptions
+
+```saga
+record StaticOptions {
+  cache_control: Maybe String,
+  index_file: Maybe String
+}
+```
+
+Options for serving a static directory. `cache_control` emits a
+`Cache-Control` header on successful file responses. `index_file` is used when
+the request targets the static directory root.
+
 ### Request
 
 ```saga
@@ -863,6 +876,15 @@ fun octet_stream : Int -> BitString -> Response
 
 Build a binary response with `application/octet-stream`.
 
+### default_static_options
+
+```saga
+fun default_static_options : StaticOptions
+```
+
+Default static-directory policy: try `index.html` at the directory root and
+emit no cache header.
+
 ### file_response
 
 ```saga
@@ -871,6 +893,15 @@ fun file_response : String -> Response needs {File}
 
 Serve a specific filesystem path as a buffered response. The content type is
 inferred from the file extension.
+
+### file_response_with_headers
+
+```saga
+fun file_response_with_headers : List (String, String) -> String -> Response needs {File}
+```
+
+Serve a specific filesystem path as a buffered response with inferred content
+type and extra headers.
 
 ### file_response_as
 
@@ -881,6 +912,15 @@ fun file_response_as : String -> String -> Response needs {File}
 Serve a specific filesystem path as a buffered response with an explicit
 content type.
 
+### file_response_as_with_headers
+
+```saga
+fun file_response_as_with_headers : List (String, String) -> String -> String -> Response needs {File}
+```
+
+Serve a specific filesystem path as a buffered response with an explicit
+content type and extra headers.
+
 ### static_dir
 
 ```saga
@@ -889,7 +929,17 @@ fun static_dir : String -> String -> Request -> Response needs {Skip, File}
 
 Serve files from `root` under `url_prefix`. The matched prefix is stripped, the
 remaining path is percent-decoded, and unsafe segments (`.`, `..`, decoded
-slashes, and backslashes) are rejected.
+slashes, and backslashes) are rejected. `GET` returns the file body; `HEAD`
+returns the same headers without a body. Directory-root requests use
+`default_static_options`.
+
+### static_dir_with
+
+```saga
+fun static_dir_with : StaticOptions -> String -> String -> Request -> Response needs {Skip, File}
+```
+
+Serve files from `root` under `url_prefix` with explicit static options.
 
 ### set_cookie
 
