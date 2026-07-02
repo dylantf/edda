@@ -702,7 +702,8 @@ unrelated ambient context can still write their own boundary with `from_http`.
 Buffered static files are now in core:
 
 - `file_response : String -> Response needs {File}` serves a known filesystem
-  path with inferred content type.
+  path with inferred content type. Buffered file responses emit
+  `Content-Length`, a weak `ETag`, and `Accept-Ranges: bytes`.
 - `file_response_with_headers : List (String, String) -> String -> Response needs {File}`
   serves a known filesystem path with inferred content type and extra response
   headers.
@@ -714,15 +715,21 @@ Buffered static files are now in core:
 - `static_dir : String -> String -> Request -> Response needs {Skip, File}`
   serves files from a root directory under a URL prefix. It decodes `%XX` path
   segments and rejects traversal (`.`, `..`, decoded slashes, and backslashes).
-  It accepts `GET` and `HEAD`, stripping the response body for `HEAD`.
+  It accepts `GET` and `HEAD`, stripping the response body for `HEAD`. It also
+  handles `If-None-Match`, single `Range: bytes=...` requests, and `If-Range`
+  against the generated weak ETag.
 - `static_dir_with : StaticOptions -> String -> String -> Request -> Response needs {Skip, File}`
   adds explicit static-directory policy. `StaticOptions` currently supports an
   optional `Cache-Control` value and optional root index file. The default
   policy tries `index.html` and emits no cache header.
 
-Still worth adding: broader MIME detection, conditional requests (`ETag`,
-`If-None-Match`, `Last-Modified`), range requests, and maybe richer index-file
-fallback policy. Directory listings remain out of scope.
+MIME detection covers common text, image, font, audio, video, archive, and web
+asset extensions, falling back to `application/octet-stream`.
+
+Still worth adding: metadata-backed `Last-Modified` and `If-Modified-Since`
+once `Std.File` exposes file metadata, multi-range responses if we need them,
+and maybe richer index-file fallback policy. Directory listings remain out of
+scope.
 
 ### Streaming files and large responses
 
@@ -770,12 +777,14 @@ path separators, and ASCII control bytes. Apps should still choose their own
 storage paths and not trust `MultipartFile.filename` as a path.
 
 Header parameter parsing now handles quoted values, semicolons inside quoted
-values, and escaped quoted-pair bytes such as `\"` and `\\`. This is shared by
-`Content-Type` boundary parsing and multipart `Content-Disposition` fields.
+values, escaped quoted-pair bytes such as `\"` and `\\`, and `filename*=`
+extended encoding. This is shared by `Content-Type` boundary parsing and
+multipart `Content-Disposition` fields. When both `filename*` and `filename`
+are present, Edda prefers the decoded extended value and falls back to
+`filename` if the extended value is invalid.
 
 Remaining multipart polish:
 
-- Header parameter parsing: support `filename*=` extended encoding.
 - Streaming/temp-file story: large uploads need streaming/backpressure,
   temporary storage, and cleanup semantics. Those probably need streaming
   request body support in `saga_http` before they are pleasant.
@@ -833,13 +842,15 @@ Current coverage:
   accumulated `matches`, plus `405`, `Allow`, automatic `OPTIONS`, and `HEAD`
   behavior.
 - `RequestTest`: query/form decoding, URL-encoded parser limits, cookies,
-  filename sanitizing, quoted multipart parameters, file parts, and multipart
-  size limits.
+  filename sanitizing, quoted and extended multipart parameters, file parts,
+  and multipart size limits.
 - `ResponseTest`: response constructors, status/header mutators, redirects,
   HTML, and binary bodies.
 - `CorsTest`: CORS actual requests, preflight handling, disallowed origins,
   exposed headers, and credentialed wildcard origin echoing.
 - `SpecTest`: typed `SchemaFor` witnesses render into OpenAPI response schemas.
+- `StaticTest`: static directory routing, file headers, index files, cache
+  headers, `HEAD`, `If-None-Match`, and single byte ranges.
 
 Use `saga test` for fast regressions and keep browser/demo checks for behavior
 that genuinely needs a running server.

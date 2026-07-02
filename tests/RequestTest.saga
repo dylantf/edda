@@ -80,6 +80,14 @@ multipart_body = "--abc\r\n"
   <> "bytes\r\n"
   <> "--abc--"
 
+fun multipart_extended_filename_body : String
+multipart_extended_filename_body = "--abc\r\n"
+  <> "Content-Disposition: form-data; name=\"upload\"; filename=\"fallback.txt\"; filename*=UTF-8''cafe%20notes%2Bv1.txt\r\n"
+  <> "Content-Type: text/plain\r\n"
+  <> "\r\n"
+  <> "bytes\r\n"
+  <> "--abc--"
+
 fun with_default_parser_options : (Unit -> a needs {RequestParserConfig}) -> a
 with_default_parser_options run = run () with {
   request_parser_options () = resume default_request_parser_options
@@ -303,6 +311,17 @@ tests () = {
             }
             Nothing -> assert_eq True False
           }
+        }
+        Err _ -> assert_eq True False
+      }
+    })
+
+    test "multipart_values prefers extended filename parameters" (fun () -> {
+      let result = with_default_parser_options (fun () -> multipart_values (multipart_req multipart_extended_filename_body))
+      case result {
+        Ok values -> case multipart_file "upload" values {
+          Just file -> assert_eq file.filename "cafe notes+v1.txt"
+          Nothing -> assert_eq True False
         }
         Err _ -> assert_eq True False
       }

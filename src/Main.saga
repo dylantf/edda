@@ -4,9 +4,9 @@ import Std.File (fs)
 import Std.IO (console, println)
 import Demo.AuthMiddleware as Auth
 import Demo.ErrorMiddleware as Errors
-import Demo.Form as Form
-import Demo.JsonApi as JsonApi
-import Demo.Session as Session
+import Demo.Form
+import Demo.JsonApi
+import Demo.Session
 import Demo.SpecRoutes as Spec
 import Demo.TimingMiddleware as Timing
 import Edda (

@@ -679,7 +679,7 @@ parse_multipart_part options bytes = case split_bytes [13, 10, 13, 10] bytes {
       let headers = parse_part_headers header_text
       case header_value "content-disposition" headers {
         Just disposition -> case header_param "name" disposition {
-          Just name -> case header_param "filename" disposition {
+          Just name -> case multipart_filename disposition {
             Just filename -> case check_limit options.max_file_bytes (List.length body_bytes) {
               Ok _ ->
                 Ok (
@@ -1034,6 +1034,36 @@ parse_header_param part = {
   let name = String.to_lower (String.trim raw_name)
   if name == "" || raw_value == "" then Nothing
   else Just (name, decode_header_param_value (String.trim raw_value))
+}
+
+fun multipart_filename : String -> Maybe String
+multipart_filename disposition = case header_param "filename*" disposition {
+  Just encoded -> case decode_extended_header_value encoded {
+    Just filename -> Just filename
+    Nothing -> header_param "filename" disposition
+  }
+  Nothing -> header_param "filename" disposition
+}
+
+fun decode_extended_header_value : String -> Maybe String
+decode_extended_header_value value = case String.split "'" value {
+  charset :: _lang :: rest -> {
+    let normalized = String.to_lower charset
+    if normalized == "utf-8" || normalized == "us-ascii" then {
+      percent_decode_header_value (String.join "'" rest)
+    }
+    else Nothing
+  }
+  _ -> Nothing
+}
+
+fun percent_decode_header_value : String -> Maybe String
+percent_decode_header_value value = case decode_percent_bytes False value (BitString.to_list (BitString.from_string value)) [] {
+  Ok bytes -> case BitString.to_string (BitString.from_list (List.reverse bytes)) {
+    Ok decoded -> Just decoded
+    Err _ -> Nothing
+  }
+  Err _ -> Nothing
 }
 
 fun split_header_params : String -> List String

@@ -28,6 +28,10 @@ req method path = Request {
   body: Nothing,
 }
 
+fun with_header : String -> String -> Request -> Request
+with_header name value request =
+  { request | headers: request.headers <> [(name, value)] }
+
 fun run_static : (Unit -> Response needs {Skip, File}) -> Response
 run_static run = run () with {
   fs,
@@ -45,6 +49,16 @@ body_size resp = case resp.body {
   _ -> -1
 }
 
+fun body_text : Response -> String
+body_text resp = case resp.body {
+  Http.Buffered text -> text
+  Http.BufferedBytes body -> case BitString.to_string body {
+    Ok text -> text
+    Err _ -> "<<non-text bytes>>"
+  }
+  _ -> "<<streaming response>>"
+}
+
 pub fun tests : Unit -> Unit needs {Testing}
 tests () = {
   describe "Static files" (fun () -> {
@@ -53,6 +67,11 @@ tests () = {
         static_dir "/static" "src/static" (req GET "/static/cats/cat1.jpg"))
       assert_eq resp.status 200
       assert_eq (header "content-type" resp) (Just "image/jpeg")
+      assert_eq (header "accept-ranges" resp) (Just "bytes")
+      case header "etag" resp {
+        Just _ -> assert_true True
+        Nothing -> assert_true False
+      }
       assert_true (body_size resp > 0)
     })
 
@@ -75,6 +94,40 @@ tests () = {
       assert_eq resp.status 200
       assert_eq (header "content-type" resp) (Just "application/json")
       assert_eq (header "cache-control" resp) (Just "public, max-age=60")
+    })
+
+    test "static_dir returns 304 for matching If-None-Match" (fun () -> {
+      let first = run_static (fun () ->
+        static_dir "/docs" "docs" (req GET "/docs/guide.json"))
+      case header "etag" first {
+        Just etag -> {
+          let request =
+            req GET "/docs/guide.json"
+              |> with_header "If-None-Match" etag
+          let second = run_static (fun () ->
+            static_dir "/docs" "docs" request)
+          assert_eq second.status 304
+          assert_eq (header "etag" second) (Just etag)
+          assert_eq (body_size second) 0
+        }
+        Nothing -> assert_true False
+      }
+    })
+
+    test "static_dir serves single byte ranges" (fun () -> {
+      let request =
+        req GET "/docs/guide.json"
+          |> with_header "Range" "bytes=0-3"
+      let resp = run_static (fun () ->
+        static_dir "/docs" "docs" request)
+      assert_eq resp.status 206
+      case header "content-range" resp {
+        Just value -> assert_true (String.starts_with "bytes 0-3/" value)
+        Nothing -> assert_true False
+      }
+      assert_eq (header "content-length" resp) (Just "4")
+      assert_eq (body_size resp) 4
+      assert_eq (body_text resp) "{\n  "
     })
   })
 }

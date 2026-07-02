@@ -3,12 +3,15 @@ module Edda.Static
 import Std.BitString
 import Std.File (File)
 import Std.File as File
+import Std.Int
 import Std.List
 import Std.String
 import Edda.Request (
   Request,
   GET,
-  HEAD
+  HEAD,
+  header,
+  header_values
 )
 import Edda.Router (Skip)
 import Edda.Response (not_found)
@@ -64,7 +67,10 @@ pub fun file_response_as_with_headers : List (String, String)
   -> Response
   needs {File}
 file_response_as_with_headers headers content_type path = case File.read! path {
-  Ok body -> Http.bytes 200 ([("Content-Type", content_type)] <> headers) (BitString.from_string body)
+  Ok body -> {
+    let body_bytes = BitString.from_string body
+    Http.bytes 200 (static_response_headers content_type headers body_bytes) body_bytes
+  }
   Err File.NotFound -> not_found
   Err File.NotDirectory -> not_found
   Err File.IsDirectory -> not_found
@@ -92,7 +98,7 @@ static_dir_with options url_prefix root req =
     case match_prefix (path_segments url_prefix) (path_segments req.path) {
       Just remaining -> case static_path options root remaining {
         Ok path -> {
-          let resp = file_response_with_headers (static_headers options) path
+          let resp = static_file_response options req path
           if req.method == HEAD then without_body resp else resp
         }
         Err (InvalidStaticPercentEscape _) -> text 400 "bad static path"
@@ -104,14 +110,194 @@ static_dir_with options url_prefix root req =
   }
   else skip! ()
 
+fun static_file_response : StaticOptions -> Request -> String -> Response needs {File}
+static_file_response options req path =
+  static_file_response_as options req (content_type_for_path path) path
+
+fun static_file_response_as : StaticOptions
+  -> Request
+  -> String
+  -> String
+  -> Response
+  needs {File}
+static_file_response_as options req content_type path = case File.read! path {
+  Ok body -> {
+    let body_bytes = BitString.from_string body
+    let etag = static_etag body_bytes
+    if if_none_match_matches etag req then not_modified_response (static_headers options) etag
+    else case range_response req content_type (static_headers options) body_bytes etag {
+      Just resp -> resp
+      Nothing ->
+        Http.bytes 200 (static_response_headers content_type (static_headers options) body_bytes) body_bytes
+    }
+  }
+  Err File.NotFound -> not_found
+  Err File.NotDirectory -> not_found
+  Err File.IsDirectory -> not_found
+  Err File.PermissionDenied -> text 403 "forbidden"
+  Err _ -> text 500 "could not read file"
+}
+
 fun static_headers : StaticOptions -> List (String, String)
 static_headers options = case options.cache_control {
   Just value -> [("Cache-Control", value)]
   Nothing -> []
 }
 
+fun static_response_headers : String
+  -> List (String, String)
+  -> BitString
+  -> List (String, String)
+static_response_headers content_type extra body = [
+  ("Content-Type", content_type),
+  ("Content-Length", show (BitString.size body)),
+  ("ETag", static_etag body),
+  ("Accept-Ranges", "bytes"),
+] <> extra
+
+fun not_modified_response : List (String, String) -> String -> Response
+not_modified_response extra etag = Response {
+  status: 304,
+  headers: [("ETag", etag)] <> extra,
+  body: Buffered "",
+}
+
 fun without_body : Response -> Response
 without_body resp = { resp | body: Buffered "" }
+
+type StaticRange =
+  | StaticRange Int Int
+
+type StaticRangeResult =
+  | RangeOk StaticRange
+  | RangeInvalid
+  | RangeUnsatisfiable
+
+fun range_response : Request
+  -> String
+  -> List (String, String)
+  -> BitString
+  -> String
+  -> Maybe Response
+range_response req content_type extra body etag = case header "range" req {
+  Just raw ->
+    if if_range_allows etag req then {
+      case parse_range_header (BitString.size body) raw {
+        RangeOk (StaticRange start finish) -> {
+          let len = finish - start + 1
+          let range_body = BitString.slice start len body
+          Just (Http.bytes 206 ([
+            ("Content-Type", content_type),
+            ("Content-Length", show len),
+            ("ETag", etag),
+            ("Accept-Ranges", "bytes"),
+            ("Content-Range", $"bytes {start}-{finish}/{BitString.size body}"),
+          ] <> extra) range_body)
+        }
+        RangeUnsatisfiable -> Just (Response {
+          status: 416,
+          headers: [
+            ("Content-Range", $"bytes */{BitString.size body}"),
+            ("Accept-Ranges", "bytes"),
+          ] <> extra,
+          body: Buffered "",
+        })
+        RangeInvalid -> Nothing
+      }
+    }
+    else Nothing
+  Nothing -> Nothing
+}
+
+fun if_range_allows : String -> Request -> Bool
+if_range_allows etag req = case header "if-range" req {
+  Nothing -> True
+  Just value -> etag_values_match etag value
+}
+
+fun parse_range_header : Int -> String -> StaticRangeResult
+parse_range_header size raw = {
+  let value = String.trim raw
+  if size <= 0 then RangeUnsatisfiable
+  else if not (String.starts_with "bytes=" value) then RangeInvalid
+  else {
+    let spec = String.trim (String.slice 6 (String.length value - 6) value)
+    if String.contains "," spec then RangeInvalid
+    else parse_single_range size spec
+  }
+}
+
+fun parse_single_range : Int -> String -> StaticRangeResult
+parse_single_range size spec =
+  if String.starts_with "-" spec then parse_suffix_range size (String.slice 1 (String.length spec - 1) spec)
+  else case String.split "-" spec {
+    [start_raw, end_raw] -> parse_bounded_range size (String.trim start_raw) (String.trim end_raw)
+    _ -> RangeInvalid
+  }
+
+fun parse_suffix_range : Int -> String -> StaticRangeResult
+parse_suffix_range size raw = case parse_digits raw {
+  Just suffix ->
+    if suffix <= 0 then RangeInvalid
+    else if suffix >= size then RangeOk (StaticRange 0 (size - 1))
+    else RangeOk (StaticRange (size - suffix) (size - 1))
+  Nothing -> RangeInvalid
+}
+
+fun parse_bounded_range : Int -> String -> String -> StaticRangeResult
+parse_bounded_range size start_raw end_raw = case parse_digits start_raw {
+  Just start -> {
+    let maybe_end =
+      if end_raw == "" then Just (size - 1)
+      else parse_digits end_raw
+    case maybe_end {
+      Just requested_end ->
+        if start >= size then RangeUnsatisfiable
+        else if requested_end < start then RangeUnsatisfiable
+        else if requested_end >= size then RangeOk (StaticRange start (size - 1))
+        else RangeOk (StaticRange start requested_end)
+      Nothing -> RangeInvalid
+    }
+  }
+  Nothing -> RangeInvalid
+}
+
+fun parse_digits : String -> Maybe Int
+parse_digits value =
+  if value == "" || not (String.is_digit value) then Nothing
+  else Int.parse value
+
+fun static_etag : BitString -> String
+static_etag body =
+  $"W/\"{BitString.size body}-{etag_checksum (BitString.to_list body) 5381}\""
+
+fun etag_checksum : List Int -> Int -> Int
+etag_checksum bytes acc = case bytes {
+  [] -> acc
+  b :: rest -> etag_checksum rest (((acc * 33) + b) % 2147483647)
+}
+
+fun if_none_match_matches : String -> Request -> Bool
+if_none_match_matches etag req =
+  List.any (etag_list_matches etag) (header_values "if-none-match" req)
+
+fun etag_list_matches : String -> String -> Bool
+etag_list_matches etag value =
+  List.any (etag_values_match etag) (split_etag_list value)
+
+fun split_etag_list : String -> List String
+split_etag_list value = List.map String.trim (String.split "," value)
+
+fun etag_values_match : String -> String -> Bool
+etag_values_match etag candidate = {
+  let value = String.trim candidate
+  value == "*" || normalize_etag value == normalize_etag etag
+}
+
+fun normalize_etag : String -> String
+normalize_etag value =
+  if String.starts_with "W/" value then String.trim (String.slice 2 (String.length value - 2) value)
+  else value
 
 fun static_path : StaticOptions -> String -> List String -> Result String StaticPathError
 static_path options root raw_segments = case decode_segments raw_segments [] {
@@ -210,9 +396,25 @@ content_type_for_path path = case file_extension path {
   "jpeg" -> "image/jpeg"
   "gif" -> "image/gif"
   "webp" -> "image/webp"
+  "avif" -> "image/avif"
+  "bmp" -> "image/bmp"
   "ico" -> "image/x-icon"
   "wasm" -> "application/wasm"
   "pdf" -> "application/pdf"
+  "xml" -> "application/xml"
+  "rss" -> "application/rss+xml"
+  "atom" -> "application/atom+xml"
+  "woff" -> "font/woff"
+  "woff2" -> "font/woff2"
+  "ttf" -> "font/ttf"
+  "otf" -> "font/otf"
+  "mp3" -> "audio/mpeg"
+  "mp4" -> "video/mp4"
+  "webm" -> "video/webm"
+  "mov" -> "video/quicktime"
+  "zip" -> "application/zip"
+  "gz" -> "application/gzip"
+  "tar" -> "application/x-tar"
   _ -> "application/octet-stream"
 }
 

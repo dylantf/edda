@@ -152,7 +152,9 @@ record MultipartFile {
 }
 ```
 
-A buffered file part from a multipart form.
+A buffered file part from a multipart form. `filename` prefers a decoded
+`filename*=` extended parameter when present, falling back to ordinary
+`filename=` when needed.
 
 ### MultipartValue
 
@@ -285,7 +287,8 @@ record StaticOptions {
 
 Options for serving a static directory. `cache_control` emits a
 `Cache-Control` header on successful file responses. `index_file` is used when
-the request targets the static directory root.
+the request targets the static directory root. Static responses emit
+`Content-Length`, a weak `ETag`, and `Accept-Ranges: bytes`.
 
 ### Request
 
@@ -892,7 +895,8 @@ fun file_response : String -> Response needs {File}
 ```
 
 Serve a specific filesystem path as a buffered response. The content type is
-inferred from the file extension.
+inferred from the file extension. The response includes `Content-Length`, a
+weak `ETag`, and `Accept-Ranges: bytes`.
 
 ### file_response_with_headers
 
@@ -931,7 +935,8 @@ Serve files from `root` under `url_prefix`. The matched prefix is stripped, the
 remaining path is percent-decoded, and unsafe segments (`.`, `..`, decoded
 slashes, and backslashes) are rejected. `GET` returns the file body; `HEAD`
 returns the same headers without a body. Directory-root requests use
-`default_static_options`.
+`default_static_options`. Static directory responses handle `If-None-Match`,
+single byte ranges, and `If-Range` against the generated weak ETag.
 
 ### static_dir_with
 
