@@ -12,7 +12,10 @@ import Edda (
   with_headers,
   replace_header,
   content_type,
-  octet_stream
+  octet_stream,
+  default_session_cookie_options,
+  secure_session_cookie_options,
+  SameSiteLax
 )
 import SagaHttp.Http as Http (Response)
 
@@ -96,6 +99,20 @@ tests () = {
         ("x-trace", "three"),
         ("Content-Type", "text/plain"),
       ]
+    })
+
+    test "session cookie option presets are conservative for app sessions" (fun () -> {
+      let defaults = default_session_cookie_options
+      assert_eq defaults.path (Just "/")
+      assert_eq defaults.http_only True
+      assert_eq defaults.secure False
+      assert_eq defaults.same_site (Just SameSiteLax)
+
+      let secure = secure_session_cookie_options
+      assert_eq secure.path (Just "/")
+      assert_eq secure.http_only True
+      assert_eq secure.secure True
+      assert_eq secure.same_site (Just SameSiteLax)
     })
   })
 }

@@ -124,6 +124,24 @@ default_cookie_options = CookieOptions {
   same_site: Nothing,
 }
 
+#@ Default session-cookie options for same-site form/session flows.
+#@
+#@ Emits `Path=/`, `HttpOnly`, and `SameSite=Lax`. `Secure` remains false so
+#@ local HTTP demos work; use `secure_session_cookie_options` for HTTPS apps.
+pub fun default_session_cookie_options : CookieOptions
+default_session_cookie_options = {
+  default_cookie_options |
+  path: Just "/",
+  http_only: True,
+  same_site: Just SameSiteLax,
+}
+
+#@ Session-cookie options for HTTPS apps.
+#@
+#@ Same as `default_session_cookie_options`, plus `Secure`.
+pub fun secure_session_cookie_options : CookieOptions
+secure_session_cookie_options = { default_session_cookie_options | secure: True }
+
 #@ Add a `Set-Cookie` response header with default options.
 #@ Cookie names and values are percent-encoded.
 pub fun set_cookie : String -> String -> Response -> Response

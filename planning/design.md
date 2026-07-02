@@ -794,7 +794,6 @@ Remaining multipart polish:
 Security policy should stay explicit and composable, mostly as response/request
 helpers or wrap functions rather than router magic. Likely useful slices:
 
-- Secure cookie defaults for session-style cookies.
 - CSRF helpers for form apps.
 - Security headers wrapper for common headers such as HSTS,
   `X-Content-Type-Options`, and frame policy.
@@ -808,8 +807,8 @@ module has two layers:
 - low-level primitives from `Std.Crypto`, re-exported for convenience:
   `hmac_sha256`, `base64url_encode`, `base64url_decode`, and `secure_equal`;
 - Edda policy helpers: opaque `CookieSecret`, `sign_cookie_value`,
-  `verify_cookie_value`, `signed_cookie`, `set_signed_cookie`, and
-  `set_signed_cookie_with`.
+  `verify_cookie_value`, `signed_cookie`, `set_signed_cookie`,
+  checked setter variants, and rotating `CookieSecrets` helpers.
 
 Signed cookies provide integrity, not secrecy. The current format is:
 
@@ -817,10 +816,10 @@ Signed cookies provide integrity, not secrecy. The current format is:
 s:<base64url(value)>.<base64url(hmac_sha256(secret, "s:" <> base64url(value)))>
 ```
 
-The session demo now uses signed cookies with a development-only secret. Real
-apps should load a high-entropy secret from configuration. Key rotation is not
-implemented yet; the likely next shape is a `CookieSecrets` record with a
-current signing key and previous verification keys.
+`default_session_cookie_options` and `secure_session_cookie_options` provide
+small presets for session-style cookies. The session demo now uses signed
+cookies with a development-only secret. Real apps should load a high-entropy
+secret from configuration.
 
 ### Content negotiation
 

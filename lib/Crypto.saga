@@ -7,14 +7,30 @@ import Std.Crypto (
   pub base64url_decode,
   pub secure_equal
 )
+import Std.List
 import Std.String
 import Edda.Request (Request, cookie)
-import Edda.Response (CookieOptions, default_cookie_options, set_cookie_with)
+import Edda.Response (
+  CookieOptions,
+  CookieError,
+  default_cookie_options,
+  set_cookie_with,
+  set_cookie_with_checked
+)
 import SagaHttp.Http (Response)
 
 #@ Opaque signing secret used for signed cookie values.
 opaque type CookieSecret =
   | CookieSecret BitString
+
+#@ Signing secrets for key rotation.
+#@
+#@ New cookies are signed with `current`; verification accepts `current` and
+#@ every secret in `previous`.
+pub record CookieSecrets {
+  current: CookieSecret,
+  previous: List CookieSecret,
+}
 
 #@ Errors returned while reading or verifying a signed cookie.
 pub type SignedCookieError =
@@ -34,6 +50,20 @@ cookie_secret value = CookieSecret (BitString.from_string value)
 pub fun cookie_secret_bytes : BitString -> CookieSecret
 cookie_secret_bytes value = CookieSecret value
 
+#@ Build a non-rotating secret set from the current signing secret.
+pub fun cookie_secrets : CookieSecret -> CookieSecrets
+cookie_secrets current = CookieSecrets { current: current, previous: [] }
+
+#@ Build a rotating secret set. Signing uses `current`; verification also
+#@ accepts `previous`.
+pub fun cookie_secrets_with_previous : CookieSecret
+  -> List CookieSecret
+  -> CookieSecrets
+cookie_secrets_with_previous current previous = CookieSecrets {
+  current: current,
+  previous: previous,
+}
+
 #@ Sign a cookie value. The result is cookie-safe but not encrypted.
 pub fun sign_cookie_value : CookieSecret -> String -> String
 sign_cookie_value (CookieSecret key) value = {
@@ -42,6 +72,11 @@ sign_cookie_value (CookieSecret key) value = {
   let signature = base64url_encode (hmac_sha256 key (BitString.from_string payload))
   payload <> "." <> signature
 }
+
+#@ Sign a cookie value with the current secret from a rotating secret set.
+pub fun sign_cookie_value_with_secrets : CookieSecrets -> String -> String
+sign_cookie_value_with_secrets secrets value =
+  sign_cookie_value secrets.current value
 
 #@ Verify a signed cookie value and return the original unsigned value.
 pub fun verify_cookie_value : CookieSecret
@@ -55,6 +90,17 @@ verify_cookie_value (CookieSecret key) signed = case String.strip_prefix "s:" si
   Nothing -> Err SignedCookieBadFormat
 }
 
+#@ Verify a signed cookie value against the current and previous secrets.
+pub fun verify_cookie_value_with_secrets : CookieSecrets
+  -> String
+  -> Result String SignedCookieError
+verify_cookie_value_with_secrets secrets signed =
+  case verify_cookie_value secrets.current signed {
+    Ok value -> Ok value
+    Err SignedCookieBadSignature -> verify_previous_cookie_value secrets.previous signed
+    Err e -> Err e
+  }
+
 #@ Read and verify a named cookie from the request.
 pub fun signed_cookie : CookieSecret
   -> String
@@ -62,6 +108,16 @@ pub fun signed_cookie : CookieSecret
   -> Result String SignedCookieError
 signed_cookie secret name req = case cookie name req {
   Just value -> verify_cookie_value secret value
+  Nothing -> Err (SignedCookieMissing name)
+}
+
+#@ Read and verify a named cookie against current and previous secrets.
+pub fun signed_cookie_with_secrets : CookieSecrets
+  -> String
+  -> Request
+  -> Result String SignedCookieError
+signed_cookie_with_secrets secrets name req = case cookie name req {
+  Just value -> verify_cookie_value_with_secrets secrets value
   Nothing -> Err (SignedCookieMissing name)
 }
 
@@ -83,6 +139,56 @@ pub fun set_signed_cookie_with : CookieSecret
   -> Response
 set_signed_cookie_with secret name value options resp =
   set_cookie_with name (sign_cookie_value secret value) options resp
+
+#@ Add a signed cookie using default cookie options, validating the name.
+pub fun set_signed_cookie_checked : CookieSecret
+  -> String
+  -> String
+  -> Response
+  -> Result Response CookieError
+set_signed_cookie_checked secret name value resp =
+  set_signed_cookie_with_checked secret name value default_cookie_options resp
+
+#@ Add a signed cookie using explicit cookie options, validating the name.
+pub fun set_signed_cookie_with_checked : CookieSecret
+  -> String
+  -> String
+  -> CookieOptions
+  -> Response
+  -> Result Response CookieError
+set_signed_cookie_with_checked secret name value options resp =
+  set_cookie_with_checked name (sign_cookie_value secret value) options resp
+
+#@ Add a signed cookie with the current secret from a rotating secret set.
+pub fun set_signed_cookie_with_secrets : CookieSecrets
+  -> String
+  -> String
+  -> Response
+  -> Response
+set_signed_cookie_with_secrets secrets name value resp =
+  set_signed_cookie_with_secrets_and_options secrets name value default_cookie_options resp
+
+#@ Add a signed cookie with rotating secrets and explicit cookie options.
+pub fun set_signed_cookie_with_secrets_and_options : CookieSecrets
+  -> String
+  -> String
+  -> CookieOptions
+  -> Response
+  -> Response
+set_signed_cookie_with_secrets_and_options secrets name value options resp =
+  set_cookie_with name (sign_cookie_value_with_secrets secrets value) options resp
+
+fun verify_previous_cookie_value : List CookieSecret
+  -> String
+  -> Result String SignedCookieError
+verify_previous_cookie_value previous signed = case previous {
+  [] -> Err SignedCookieBadSignature
+  secret :: rest -> case verify_cookie_value secret signed {
+    Ok value -> Ok value
+    Err SignedCookieBadSignature -> verify_previous_cookie_value rest signed
+    Err e -> Err e
+  }
+}
 
 fun verify_cookie_parts : BitString
   -> String

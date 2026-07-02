@@ -6,19 +6,25 @@ import Std.Test (Testing, describe, test, assert_eq, assert_true)
 import Edda (
   Request,
   GET,
+  InvalidCookieName,
   empty_response
 )
 import Edda.Crypto (
   SignedCookieError,
   cookie_secret,
+  cookie_secrets_with_previous,
   hmac_sha256,
   base64url_encode,
   base64url_decode,
   secure_equal,
   sign_cookie_value,
+  sign_cookie_value_with_secrets,
   verify_cookie_value,
+  verify_cookie_value_with_secrets,
   signed_cookie,
-  set_signed_cookie
+  signed_cookie_with_secrets,
+  set_signed_cookie,
+  set_signed_cookie_checked
 )
 import SagaHttp.Http as Http (Response)
 
@@ -81,12 +87,37 @@ tests () = {
       assert_eq (signed_cookie secret "missing" req) (Err (SignedCookieMissing "missing"))
     })
 
+    test "rotating signed cookie secrets verify previous values and sign current values" (fun () -> {
+      let old_secret = cookie_secret "old secret"
+      let new_secret = cookie_secret "new secret"
+      let secrets = cookie_secrets_with_previous new_secret [old_secret]
+
+      let old_signed = sign_cookie_value old_secret "alice"
+      assert_eq (verify_cookie_value_with_secrets secrets old_signed) (Ok "alice")
+
+      let new_signed = sign_cookie_value_with_secrets secrets "bob"
+      assert_eq (verify_cookie_value new_secret new_signed) (Ok "bob")
+      assert_eq (verify_cookie_value old_secret new_signed) (Err SignedCookieBadSignature)
+
+      let req = req_with_cookie "session" old_signed
+      assert_eq (signed_cookie_with_secrets secrets "session" req) (Ok "alice")
+    })
+
     test "set_signed_cookie writes a verifiable Set-Cookie header" (fun () -> {
       let secret = cookie_secret "test secret"
       let resp = set_signed_cookie secret "session" "alice" (empty_response 200)
       case signed_cookie_header_value "session" resp {
         Just value -> assert_eq (verify_cookie_value secret value) (Ok "alice")
         Nothing -> assert_true False
+      }
+    })
+
+    test "checked signed cookie setters reject invalid cookie names" (fun () -> {
+      let secret = cookie_secret "test secret"
+      let resp = empty_response 200
+      case set_signed_cookie_checked secret "bad name" "alice" resp {
+        Err (InvalidCookieName name) -> assert_eq name "bad name"
+        _ -> assert_true False
       }
     })
   })

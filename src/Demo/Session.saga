@@ -13,7 +13,7 @@ import Edda (
   redirect,
   form_value,
   delete_cookie_with,
-  default_cookie_options,
+  default_session_cookie_options,
   CookieOptions,
   RequestParserConfig
 )
@@ -28,7 +28,7 @@ session_secret = cookie_secret "edda demo development secret"
 
 fun session_cookie_options : CookieOptions
 session_cookie_options =
-  { default_cookie_options | path: Just "/session", http_only: True }
+  { default_session_cookie_options | path: Just "/session" }
 
 fun session_user : Request -> Maybe String
 session_user req = case signed_cookie session_secret session_cookie_name req {
